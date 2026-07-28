@@ -1,0 +1,128 @@
+import type { Types } from 'mongoose';
+
+import type { IRating } from '../models/Rating';
+import type { IUser } from '../models/User';
+
+/**
+ * Response shaping.
+ *
+ * The API's job at the edge is to hand the UI exactly what it renders and
+ * nothing more — no Mongo internals, no other people's private fields, no
+ * `likes` array of a thousand ObjectIds where a count and a boolean will do.
+ *
+ * These helpers are the single place that mapping happens, so a field can't
+ * leak from one controller that another remembered to strip. They mirror
+ * `lib/contentTypes.ts` and `lib/authTypes.ts` on the frontend.
+ */
+
+/** A Mongoose doc that has been `.lean()`d or populated — id plus fields. */
+type WithId<T> = T & { _id: Types.ObjectId };
+
+const idOf = (v: unknown): string =>
+  typeof v === 'object' && v !== null && '_id' in v
+    ? String((v as { _id: unknown })._id)
+    : String(v);
+
+/* --------------------------------- users --------------------------------- */
+
+export interface UserRef {
+  id: string;
+  username: string;
+  displayName: string;
+  profilePhoto: string | null;
+}
+
+/**
+ * The author block attached to reviews, replies, activity and notifications.
+ *
+ * Accepts an unpopulated ObjectId too: a `fromUserId` that was never populated
+ * would otherwise throw here, and a missing avatar is a better outcome than a
+ * 500 on the notifications list.
+ */
+export function userRef(u: unknown): UserRef | null {
+  if (!u) return null;
+  if (typeof u === 'string' || !(typeof u === 'object' && 'username' in u)) return null;
+
+  const doc = u as WithId<IUser>;
+  return {
+    id: idOf(doc),
+    username: doc.username,
+    displayName: doc.displayName,
+    profilePhoto: doc.profilePhoto ?? null,
+  };
+}
+
+/**
+ * A public profile as seen by `viewerId`.
+ *
+ * `isFollowing` and `isMe` are viewer-relative, which is why this can't be a
+ * method on the model — the same document serialises differently per request.
+ */
+export function publicProfile(
+  u: WithId<IUser>,
+  viewerId: string | null,
+  filmCount: number,
+): Record<string, unknown> {
+  const id = idOf(u);
+  return {
+    id,
+    username: u.username,
+    displayName: u.displayName,
+    profilePhoto: u.profilePhoto ?? null,
+    bio: u.bio ?? '',
+    age: u.age,
+    gender: u.gender,
+    favouriteGenres: u.favouriteGenres ?? [],
+    favouriteMood: u.favouriteMood,
+    pinnedFilms: u.pinnedFilms ?? [],
+    followerCount: u.followers?.length ?? 0,
+    followingCount: u.following?.length ?? 0,
+    filmCount,
+    isPro: Boolean(u.isPro),
+    isFollowing: viewerId ? (u.followers ?? []).some((f) => idOf(f) === viewerId) : false,
+    isMe: viewerId === id,
+    createdAt: u.createdAt,
+  };
+}
+
+/* -------------------------------- reviews -------------------------------- */
+
+/**
+ * A rating/review for the UI.
+ *
+ * `likes` becomes `likeCount` + `likedByMe`: the client needs to render a
+ * number and a filled-or-not heart, and shipping the raw array would leak who
+ * liked what and grow without bound.
+ */
+export function review(r: WithId<IRating>, viewerId: string | null): Record<string, unknown> {
+  const likes = r.likes ?? [];
+  return {
+    id: idOf(r),
+    user: userRef(r.userId),
+    contentId: r.contentId,
+    contentType: r.contentType,
+    contentTitle: r.contentTitle,
+    poster: r.poster ?? null,
+    rating: r.rating,
+    review: r.review ?? '',
+    likeCount: likes.length,
+    likedByMe: viewerId ? likes.some((l) => idOf(l) === viewerId) : false,
+    replies: (r.replies ?? []).map((rep) => ({
+      id: String(rep._id ?? ''),
+      user: userRef(rep.userId),
+      text: rep.text,
+      createdAt: rep.createdAt,
+    })),
+    createdAt: r.createdAt,
+  };
+}
+
+/** The 1–5 histogram the detail screen's distribution chart draws. */
+export function distribution(rows: { rating: number }[]): [number, number, number, number, number] {
+  const dist: [number, number, number, number, number] = [0, 0, 0, 0, 0];
+  for (const r of rows) {
+    const i = Math.min(Math.max(Math.round(r.rating), 1), 5) - 1;
+    dist[i] += 1;
+  }
+  return dist;
+}
