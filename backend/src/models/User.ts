@@ -27,13 +27,37 @@ export const MOODS = [
 ] as const;
 export type Mood = (typeof MOODS)[number];
 
+/** How the account signs in. A Google account has no password at all, which is
+ *  why `passwordHash` is only required for `local`. */
+export type AuthProvider = 'local' | 'google';
+export const AUTH_PROVIDERS: AuthProvider[] = ['local', 'google'];
+
+/** Whether a follow needs approval. Drives the whole request flow. */
+export const PROFILE_VISIBILITIES = ['public', 'private'] as const;
+export type ProfileVisibility = (typeof PROFILE_VISIBILITIES)[number];
+
 /** The persisted user document. `passwordHash` is `select: false`, so it is
  *  omitted from queries unless explicitly requested, and stripped again by the
- *  toJSON transform — it must never leave the API. */
+ *  toJSON transform — it must never leave the API. The verification and reset
+ *  token fields are handled the same way. */
 export interface IUser {
   email: string;
   username: string;
-  passwordHash: string;
+  /** Absent on Google accounts — check `authProvider` before comparing. */
+  passwordHash?: string;
+  authProvider: AuthProvider;
+  /** Google's stable subject id. Sparse-unique: only Google accounts have one. */
+  googleId?: string | null;
+  /**
+   * Google vouches for the address, so those accounts start verified. Local
+   * signups start false and flip when the emailed link is opened.
+   */
+  emailVerified: boolean;
+  /** SHA-256 of the emailed token — see `hashToken` in authController. */
+  emailVerificationToken?: string | null;
+  emailVerificationExpires?: Date | null;
+  passwordResetToken?: string | null;
+  passwordResetExpires?: Date | null;
   displayName: string;
   profilePhoto: string | null;
   bio: string;
@@ -42,13 +66,53 @@ export interface IUser {
   favouriteGenres: string[];
   favouriteMood?: Mood;
   pinnedFilms: PinnedFilm[];
+  /**
+   * @deprecated Superseded by the `follows` collection, which can carry a
+   * `pending` state these arrays cannot express. Kept only so
+   * `scripts/migrateFollows.ts` can read the old graph; nothing else may.
+   */
   following: Types.ObjectId[];
+  /** @deprecated See `following`. */
   followers: Types.ObjectId[];
+  /**
+   * Who may follow without approval. `public` creates an accepted edge on the
+   * spot; `private` creates a pending request the target must accept.
+   * New accounts are public — the default has to match what someone signing up
+   * for a social film app expects.
+   */
+  profileVisibility: ProfileVisibility;
+  /**
+   * Denormalized counts, maintained by `$inc` alongside every edge write.
+   *
+   * `countDocuments()` on render is the obvious alternative and it is wrong:
+   * it gets slow exactly when an account gets popular, which is when its
+   * profile is read most. Drift is repaired by `scripts/reconcileCounters.ts`.
+   *
+   * `followerCount` / `followingCount` count **accepted edges only** — a
+   * pending request is not a follow, and showing it as one would leak that
+   * someone requested.
+   */
+  followerCount: number;
+  followingCount: number;
+  pendingRequestCount: number;
+  unreadNotificationCount: number;
+  /**
+   * Lifts the advisor's daily cap. Not purchasable — Velvet is free and has no
+   * paid tier; this is set by hand for the operator or a trusted account.
+   */
   isPro: boolean;
-  proExpiresAt: Date | null;
   aiMessagesUsedToday: number;
   aiMessagesResetAt: Date;
+  /** True once step 1 (name + handle) is done — that step is the only required one. */
   onboardingCompleted: boolean;
+  /**
+   * Highest onboarding step finished: 0 none, 1 profile, 2 avatar, 3 taste.
+   * Steps 2 and 3 are skippable, so this is what lets a closed tab resume where
+   * it left off rather than restarting the flow.
+   */
+  onboardingStep: number;
+  /** Cloudinary's id for the avatar, so a replacement can delete the old file. */
+  avatarPublicId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -76,6 +140,7 @@ const userSchema = new Schema<IUser>(
       type: String,
       required: true,
       unique: true,
+      lowercase: true,
       trim: true,
       minlength: 3,
       maxlength: 20,
@@ -84,10 +149,29 @@ const userSchema = new Schema<IUser>(
     },
     passwordHash: {
       type: String,
-      required: true,
+      // Only local accounts have one. `this` is the document being validated;
+      // a Google signup passes authProvider: 'google' and no hash.
+      required: function (this: { authProvider?: AuthProvider }) {
+        return (this.authProvider ?? 'local') === 'local';
+      },
       // never selected by default — see login's explicit .select('+passwordHash')
       select: false,
     },
+    authProvider: { type: String, enum: AUTH_PROVIDERS, default: 'local' },
+    googleId: {
+      type: String,
+      // Deliberately NO `default`. `sparse` skips documents where the field is
+      // *absent*, not where it is null — so defaulting to null would put every
+      // local account into the unique index and the second signup would collide
+      // on a duplicate null. Local accounts must simply not have the field.
+      unique: true,
+      sparse: true,
+    },
+    emailVerified: { type: Boolean, default: false },
+    emailVerificationToken: { type: String, default: null, select: false },
+    emailVerificationExpires: { type: Date, default: null, select: false },
+    passwordResetToken: { type: String, default: null, select: false },
+    passwordResetExpires: { type: Date, default: null, select: false },
     displayName: { type: String, required: true, trim: true },
     profilePhoto: { type: String, default: null },
     bio: { type: String, maxlength: 160, default: '' },
@@ -104,24 +188,38 @@ const userSchema = new Schema<IUser>(
         message: 'You can pin up to 5 titles.',
       },
     },
+    // Deprecated — see the interface. Retained purely for the migration script.
     following: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
     followers: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    profileVisibility: { type: String, enum: PROFILE_VISIBILITIES, default: 'public' },
+    followerCount: { type: Number, default: 0, min: 0 },
+    followingCount: { type: Number, default: 0, min: 0 },
+    pendingRequestCount: { type: Number, default: 0, min: 0 },
+    unreadNotificationCount: { type: Number, default: 0, min: 0 },
     isPro: { type: Boolean, default: false },
-    proExpiresAt: { type: Date, default: null },
     aiMessagesUsedToday: { type: Number, default: 0 },
     aiMessagesResetAt: { type: Date, default: () => new Date() },
     onboardingCompleted: { type: Boolean, default: false },
+    onboardingStep: { type: Number, default: 0, min: 0, max: 3 },
+    avatarPublicId: { type: String, default: null },
   },
   {
     timestamps: true,
     toJSON: {
       virtuals: true,
       transform(_doc, ret: Record<string, unknown>) {
-        // Expose `id`, hide Mongo internals, and — critically — never leak the hash.
+        // Expose `id`, hide Mongo internals, and — critically — never leak the
+        // hash or any credential token. `select: false` already keeps these out
+        // of ordinary queries; deleting here is the guarantee that an explicit
+        // `.select('+…')` somewhere can't accidentally serialise one to a client.
         ret.id = ret._id;
         delete ret._id;
         delete ret.__v;
         delete ret.passwordHash;
+        delete ret.emailVerificationToken;
+        delete ret.emailVerificationExpires;
+        delete ret.passwordResetToken;
+        delete ret.passwordResetExpires;
         return ret;
       },
     },
