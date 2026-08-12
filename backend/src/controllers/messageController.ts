@@ -8,6 +8,7 @@ import { User } from '../models/User';
 import { emitToUser } from '../lib/socket';
 import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
+import { areMutual, relationBetween } from '../services/social';
 import { publicProfile, userRef } from '../utils/serialize';
 import { isObjectId, str } from '../utils/validation';
 
@@ -19,6 +20,25 @@ import { isObjectId, str } from '../utils/validation';
  */
 
 const AUTHOR = 'username displayName profilePhoto';
+
+/**
+ * Messaging requires a **mutual** follow: I follow them and they follow me.
+ * A one-way follow is not consent to be messaged, which is the whole point of
+ * the rule — it means nobody can open a thread with a stranger.
+ *
+ * One query, not two. `follow` writes both sides (my `following`, their
+ * `followers`), so my own document already holds both halves of the answer and
+ * the pair of `$elemMatch`-style filters resolves on the indexed `_id`.
+ *
+ * This is the authority. The UI hides the entry points when it returns false,
+ * but the check has to live here — a hidden button is not an access control.
+ */
+async function isMutual(me: string, other: string): Promise<boolean> {
+  if (me === other) return false;
+  // Delegates to the follow graph rather than reading the deprecated arrays.
+  // Both edges must exist *and* be accepted — a pending request is not consent.
+  return areMutual(me, other);
+}
 
 /**
  * Finds or creates the thread between two people.
@@ -122,9 +142,15 @@ export async function thread(req: Request, res: Response): Promise<Response> {
 
     const filmCount = await Rating.countDocuments({ userId: other._id });
 
+    // History stays readable after a follow is withdrawn — only sending stops.
+    // Deleting the view too would make an unfollow silently destroy the record
+    // of a conversation both people had.
+    const rel = await relationBetween(me, otherId);
+
     return ok(res, {
       messages: messages.map((m) => m.toJSON()),
-      user: publicProfile(other, me, filmCount),
+      user: publicProfile(other, me, filmCount, rel),
+      canMessage: rel.outgoing === 'accepted' && rel.incoming === 'accepted',
     });
   } catch (err) {
     console.error('thread error:', err);
@@ -146,6 +172,12 @@ export async function send(req: Request, res: Response): Promise<Response> {
 
     const other = await User.findById(otherId).select('_id');
     if (!other) return fail(res, 'User not found', 404);
+
+    // Checked before the conversation is created, so a blocked send leaves no
+    // empty thread behind in either inbox.
+    if (!(await isMutual(me, otherId))) {
+      return fail(res, 'NOT_MUTUAL: You can only message people who follow you back', 403);
+    }
 
     const convo = await conversationFor(me, otherId);
 
@@ -173,7 +205,7 @@ export async function send(req: Request, res: Response): Promise<Response> {
     emitToUser(otherId, 'message:new', payload);
     emitToUser(me, 'message:new', payload);
 
-    await notify({ userId: otherId, type: 'message', fromUserId: me });
+    await notify({ userId: otherId, type: 'message', fromUserId: me, preview: text });
 
     return ok(res, { message: payload }, 201);
   } catch (err) {

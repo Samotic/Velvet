@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 
+import { Follow } from '../models/Follow';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
 import { WatchlistItem } from '../models/WatchlistItem';
@@ -90,10 +91,12 @@ async function itemsFor(userIds: unknown[], limit: number): Promise<ActivityItem
 /** GET /api/activity/feed — what the people you follow have been watching. */
 export async function feed(req: Request, res: Response): Promise<Response> {
   try {
-    const me = await User.findById(req.user!.userId).select('following').lean();
-    if (!me) return fail(res, 'User not found', 404);
+    // Accepted edges only: a pending request gives no access to their activity.
+    const edges = await Follow.find({ followerId: req.user!.userId, status: 'accepted' })
+      .select('followingId')
+      .lean();
 
-    const following = me.following ?? [];
+    const following = edges.map((e) => e.followingId);
     // Following nobody is an empty feed, not an error — the UI has a state for
     // it that points at finding people.
     if (!following.length) return ok(res, { items: [] });

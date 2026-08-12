@@ -21,6 +21,26 @@ export const env = {
   jwtExpiresIn: '7d',
   mongoUri: process.env.MONGODB_URI ?? '',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  /**
+   * This API's own public origin. Google redirects the browser back here after
+   * consent, so it must match the redirect URI registered in Google Cloud
+   * Console exactly — including scheme, port and the absence of a trailing
+   * slash. Behind a proxy or on a host this is the public URL, not the port
+   * Express binds to.
+   */
+  apiUrl: (process.env.API_URL || 'http://localhost:4000').replace(/\/$/, ''),
+
+  /**
+   * Whether the deployment can run multi-document transactions, which need a
+   * replica set. Atlas is one at every tier including the free M0, so this
+   * defaults on; a bare `mongod` is not, and there a transaction throws
+   * "Transaction numbers are only allowed on a replica set member or mongos".
+   *
+   * Set `SUPPORTS_TRANSACTIONS=false` on standalone Mongo. Follow writes then
+   * fall back to sequential writes with compensation on failure, and drift is
+   * repaired by scripts/reconcileCounters.ts.
+   */
+  supportsTransactions: process.env.SUPPORTS_TRANSACTIONS !== 'false',
 
   /* --- catalog: TMDB (films + series) --- */
   tmdbReadToken: process.env.TMDB_READ_TOKEN ?? '',
@@ -35,7 +55,11 @@ export const env = {
   /* The spec names claude-sonnet-4-6. Overridable so the model can move
      without a code change — claude-sonnet-5 is the newer Sonnet. */
   anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
-  /** Free tier daily message allowance; Velvet Pro is unlimited. */
+  /**
+   * Daily advisor allowance per account. Velvet is free and has no paid tier,
+   * so this cap is the only thing bounding what the model costs the operator —
+   * accounts with `isPro` set by hand are the sole exemption.
+   */
   aiFreeDailyMessages: Number(process.env.AI_FREE_DAILY_MESSAGES) || 10,
 
   /* --- uploads --- */
@@ -43,8 +67,29 @@ export const env = {
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY ?? '',
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET ?? '',
 
-  /* --- payments --- */
-  stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? '',
+  /* --- sign in with Google --- */
+  googleClientId: process.env.GOOGLE_CLIENT_ID ?? '',
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+  /**
+   * The exact redirect URI sent to Google, overriding the derived default.
+   *
+   * Google compares this against the registered list byte for byte, and its
+   * mismatch error never says what it expected — so rather than force the
+   * console to match the code, this lets the code match whatever the console
+   * already has. Both callback paths are served, so either spelling works.
+   *
+   * Leave unset and it derives from `apiUrl`.
+   */
+  googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL || process.env.GOOGLE_REDIRECT_URI || '',
+
+  /* --- transactional email --- */
+  resendApiKey: process.env.RESEND_API_KEY ?? '',
+  /**
+   * Resend will only deliver from a domain you have verified. Until one is set
+   * up, `onboarding@resend.dev` works but can only reach the address that owns
+   * the Resend account — enough to test the flow, not to sign anyone else up.
+   */
+  emailFrom: process.env.EMAIL_FROM || 'Velvet <onboarding@resend.dev>',
 } as const;
 
 export const isProd = env.nodeEnv === 'production';
@@ -57,5 +102,6 @@ export const configured = {
   ai: () => Boolean(env.anthropicApiKey),
   cloudinary: () =>
     Boolean(env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret),
-  stripe: () => Boolean(env.stripeSecretKey),
+  google: () => Boolean(env.googleClientId && env.googleClientSecret),
+  email: () => Boolean(env.resendApiKey),
 };

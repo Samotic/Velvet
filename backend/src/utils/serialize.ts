@@ -53,15 +53,36 @@ export function userRef(u: unknown): UserRef | null {
 }
 
 /**
+ * The viewer's relationship to the profile, in both directions.
+ *
+ * Passed in rather than derived here, because the edges live in the `follows`
+ * collection now and this function is synchronous. Handing it in also lets a
+ * list endpoint resolve every row in one query instead of one query per row.
+ */
+export interface ViewerRelation {
+  /** viewer → this user. */
+  outgoing: 'pending' | 'accepted' | null;
+  /** this user → viewer. */
+  incoming: 'pending' | 'accepted' | null;
+}
+
+export const NO_RELATION: ViewerRelation = { outgoing: null, incoming: null };
+
+/**
  * A public profile as seen by `viewerId`.
  *
  * `isFollowing` and `isMe` are viewer-relative, which is why this can't be a
  * method on the model — the same document serialises differently per request.
+ *
+ * Counts read the denormalized fields, not array lengths: the arrays are
+ * deprecated and, more to the point, a pending request must never be counted
+ * as a follower.
  */
 export function publicProfile(
   u: WithId<IUser>,
   viewerId: string | null,
   filmCount: number,
+  rel: ViewerRelation = NO_RELATION,
 ): Record<string, unknown> {
   const id = idOf(u);
   return {
@@ -75,11 +96,18 @@ export function publicProfile(
     favouriteGenres: u.favouriteGenres ?? [],
     favouriteMood: u.favouriteMood,
     pinnedFilms: u.pinnedFilms ?? [],
-    followerCount: u.followers?.length ?? 0,
-    followingCount: u.following?.length ?? 0,
+    followerCount: u.followerCount ?? 0,
+    followingCount: u.followingCount ?? 0,
     filmCount,
     isPro: Boolean(u.isPro),
-    isFollowing: viewerId ? (u.followers ?? []).some((f) => idOf(f) === viewerId) : false,
+    profileVisibility: u.profileVisibility ?? 'public',
+    /** Only an accepted edge is a follow. A pending one is `followRequested`. */
+    isFollowing: rel.outgoing === 'accepted',
+    /** Drives the third button state: Follow → Requested → Following. */
+    followRequested: rel.outgoing === 'pending',
+    // The other direction, and not redundant: messaging requires the follow to
+    // be mutual, so the UI needs both halves to know whether to offer it.
+    isFollowedBy: rel.incoming === 'accepted',
     isMe: viewerId === id,
     createdAt: u.createdAt,
   };

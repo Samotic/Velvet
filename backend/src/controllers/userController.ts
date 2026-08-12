@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
 
+import { Notification } from '../models/Notification';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
 import { viewerId } from '../middleware/auth';
@@ -9,6 +10,15 @@ import {
   uploadProfilePhoto,
   UploadNotConfiguredError,
 } from '../services/cloudinary';
+import {
+  createFollow,
+  isBlockedBetween,
+  NotFoundError,
+  relationBetween,
+  relationMap,
+  removeFollow,
+} from '../services/social';
+import { Follow } from '../models/Follow';
 import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
 import { publicProfile } from '../utils/serialize';
@@ -38,7 +48,10 @@ export async function getByUsername(req: Request, res: Response): Promise<Respon
     // something watched in this schema.
     const filmCount = await Rating.countDocuments({ userId: user._id });
 
-    return ok(res, { user: publicProfile(user, viewerId(req), filmCount) });
+    const viewer = viewerId(req);
+    const rel = await relationBetween(viewer, String(user._id));
+
+    return ok(res, { user: publicProfile(user, viewer, filmCount, rel) });
   } catch (err) {
     console.error('getByUsername error:', err);
     return fail(res, 'Could not load that profile', 500);
@@ -133,68 +146,116 @@ export async function uploadPhoto(req: Request, res: Response): Promise<Response
 
 /* -------------------------------- follows -------------------------------- */
 
-/** POST /api/users/:id/follow */
+/**
+ * POST /api/users/:id/follow
+ *
+ * Returns `{ status: 'accepted' | 'pending' }` — accepted for a public target,
+ * pending for a private one. **Idempotent**: calling it again reports the
+ * current state as a success rather than erroring, because pressing Follow
+ * twice and ending up following once is what the user meant.
+ */
 export async function follow(req: Request, res: Response): Promise<Response> {
   try {
     const targetId = req.params.id;
     const me = req.user!.userId;
 
     if (!isObjectId(targetId)) return fail(res, 'User not found', 404);
-    if (targetId === me) return fail(res, 'You cannot follow yourself', 422);
+    // 400, not 422: a self-follow is a malformed request, not a rejected one.
+    if (targetId === me) return fail(res, 'You cannot follow yourself', 400);
 
-    const target = await User.findById(targetId).select('_id displayName');
-    if (!target) return fail(res, 'User not found', 404);
+    // Deliberately generic, and identical whichever way the block runs.
+    // "You are blocked" confirms the block to the person probing for it.
+    if (await isBlockedBetween(me, targetId)) {
+      return fail(res, "Can't follow this account", 403);
+    }
 
-    // $addToSet keeps this idempotent — a double-tap can't produce duplicates
-    // or inflate the follower count.
-    await Promise.all([
-      User.updateOne({ _id: me }, { $addToSet: { following: target._id } }),
-      User.updateOne({ _id: target._id }, { $addToSet: { followers: new Types.ObjectId(me) } }),
-    ]);
+    const outcome = await createFollow(me, targetId);
 
-    await notify({ userId: target._id, type: 'follow', fromUserId: me });
+    // Only on the call that actually created the edge — otherwise a double-tap
+    // sends two notifications for one follow.
+    if (outcome.created) {
+      await notify({
+        userId: targetId,
+        type: outcome.status === 'pending' ? 'follow_request' : 'new_follower',
+        fromUserId: me,
+        followId: String(outcome.followId),
+      });
+    }
 
-    return ok(res, { following: true });
+    return ok(res, { status: outcome.status });
   } catch (err) {
+    if (err instanceof NotFoundError) return fail(res, 'User not found', 404);
     console.error('follow error:', err);
     return fail(res, 'Could not follow that user', 500);
   }
 }
 
-/** DELETE /api/users/:id/follow */
+/**
+ * DELETE /api/users/:id/follow — unfollow, or cancel one's own pending request.
+ *
+ * Also clears the target's `follow_request` notification: cancelling a request
+ * should leave nothing behind for them to accept, or they'd act on a request
+ * that no longer exists and get a 410.
+ */
 export async function unfollow(req: Request, res: Response): Promise<Response> {
   try {
     const targetId = req.params.id;
     const me = req.user!.userId;
     if (!isObjectId(targetId)) return fail(res, 'User not found', 404);
 
-    await Promise.all([
-      User.updateOne({ _id: me }, { $pull: { following: new Types.ObjectId(targetId) } }),
-      User.updateOne({ _id: targetId }, { $pull: { followers: new Types.ObjectId(me) } }),
-    ]);
+    const removed = await removeFollow(me, targetId);
 
-    return ok(res, { following: false });
+    if (removed === 'pending') {
+      await Notification.deleteMany({
+        userId: new Types.ObjectId(targetId),
+        fromUserId: new Types.ObjectId(me),
+        type: 'follow_request',
+        actionState: 'pending',
+      });
+    }
+
+    return ok(res, { status: null });
   } catch (err) {
     console.error('unfollow error:', err);
     return fail(res, 'Could not unfollow that user', 500);
   }
 }
 
-/** Shared by the followers and following lists. */
+/**
+ * Shared by the followers and following lists.
+ *
+ * Reads the edge collection, filtered to `accepted` — a pending request is not
+ * a follower, and listing it would disclose that someone had asked.
+ */
 async function listSide(req: Request, res: Response, side: 'followers' | 'following') {
   try {
     const id = req.params.id;
     if (!isObjectId(id)) return fail(res, 'User not found', 404);
 
-    const owner = await User.findById(id).select(side).lean();
+    const owner = await User.findById(id).select('_id').lean();
     if (!owner) return fail(res, 'User not found', 404);
 
-    const ids = (owner[side] ?? []) as Types.ObjectId[];
+    // "followers" = edges pointing at the owner; "following" = edges from them.
+    const edges = await Follow.find(
+      side === 'followers'
+        ? { followingId: owner._id, status: 'accepted' }
+        : { followerId: owner._id, status: 'accepted' },
+    )
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .select('followerId followingId')
+      .lean();
+
+    const ids = edges.map((e) => (side === 'followers' ? e.followerId : e.followingId));
     const users = await User.find({ _id: { $in: ids } }).lean();
 
     const viewer = viewerId(req);
-    // The counts on each row are the row's own, so no extra query per user.
-    return ok(res, { users: users.map((u) => publicProfile(u, viewer, 0)) });
+    // One query for the whole page's relationships, not one per row.
+    const rels = await relationMap(viewer, users.map((u) => String(u._id)));
+
+    return ok(res, {
+      users: users.map((u) => publicProfile(u, viewer, 0, rels.get(String(u._id)))),
+    });
   } catch (err) {
     console.error(`${side} error:`, err);
     return fail(res, `Could not load ${side}`, 500);
@@ -209,19 +270,50 @@ export const following = (req: Request, res: Response) => listSide(req, res, 'fo
 
 /* -------------------------------- search --------------------------------- */
 
-/** GET /api/users/search?q= — prefix match on handle or display name. */
+/**
+ * GET /api/users/search?q= — handle matches first, then display-name matches.
+ *
+ * The handle is the identity here: `username` is unique and indexed, while
+ * `displayName` is neither, so ten people can all be "Sam". Ranking handles
+ * above names is what makes the right person findable.
+ *
+ * Both patterns are **anchored**. The previous version built an unanchored
+ * regex, which despite its "prefix match" comment matched anywhere in the
+ * string — searching "a" returned nearly every account, and no index could
+ * serve it, so every keystroke scanned the collection.
+ */
 export async function search(req: Request, res: Response): Promise<Response> {
   try {
-    const q = str(req.query.q);
+    const q = str(req.query.q).trim();
     if (!q) return ok(res, { users: [] });
 
-    const re = new RegExp(escapeRegex(q), 'i');
-    const users = await User.find({ $or: [{ username: re }, { displayName: re }] })
-      .limit(25)
+    const safe = escapeRegex(q);
+    // A handle search is a prefix search: "am" must not match "sam".
+    const handleRe = new RegExp(`^${safe}`, 'i');
+    // Names match at any word start, so "taylor" finds "Sam Taylor" but "aylo"
+    // finds nobody — loose enough for surnames, tight enough to stay meaningful.
+    const nameRe = new RegExp(`(^|\\s)${safe}`, 'i');
+
+    // Over-fetch, because the 25 we want are the best 25 across both groups
+    // rather than whichever 25 Mongo happened to return first.
+    const rows = await User.find({ $or: [{ username: handleRe }, { displayName: nameRe }] })
+      .limit(50)
       .lean();
 
+    const byHandle = (a: (typeof rows)[number], b: (typeof rows)[number]) =>
+      (a.username ?? '').localeCompare(b.username ?? '');
+    const matchesHandle = (u: (typeof rows)[number]) => handleRe.test(u.username ?? '');
+
+    const ranked = [
+      ...rows.filter(matchesHandle).sort(byHandle),
+      ...rows.filter((u) => !matchesHandle(u)).sort(byHandle),
+    ].slice(0, 25);
+
     const viewer = viewerId(req);
-    return ok(res, { users: users.map((u) => publicProfile(u, viewer, 0)) });
+    const rels = await relationMap(viewer, ranked.map((u) => String(u._id)));
+    return ok(res, {
+      users: ranked.map((u) => publicProfile(u, viewer, 0, rels.get(String(u._id)))),
+    });
   } catch (err) {
     console.error('user search error:', err);
     return fail(res, 'Could not search people', 500);
