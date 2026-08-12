@@ -5,11 +5,10 @@ import * as ai from '../controllers/aiController';
 import * as catalog from '../controllers/catalogController';
 import * as messages from '../controllers/messageController';
 import * as notifications from '../controllers/notificationController';
-import * as pro from '../controllers/proController';
 import * as ratings from '../controllers/ratingController';
 import * as users from '../controllers/userController';
 import * as watchlist from '../controllers/watchlistController';
-import { optionalAuth, requireAuth } from '../middleware/auth';
+import { optionalAuth, requireAuth, requireVerified } from '../middleware/auth';
 
 import authRoutes from './auth';
 
@@ -53,6 +52,8 @@ router.get('/users/:username', optionalAuth, users.getByUsername);
 
 router.post('/ratings', requireAuth, ratings.upsert);
 router.get('/ratings/stats', requireAuth, ratings.myStats);
+// Declared before the `:type/:id` patterns so "mine" isn't swallowed as a type.
+router.post('/ratings/content/mine', requireAuth, ratings.myRatingsBulk);
 router.get('/ratings/content/:type/:id/me', requireAuth, ratings.myRating);
 router.get('/ratings/content/:type/:id', optionalAuth, ratings.contentSummary);
 router.get('/ratings/user/:userId', optionalAuth, ratings.byUser);
@@ -74,32 +75,43 @@ router.delete('/watchlist/:id', requireAuth, watchlist.remove);
 // Importing the AI controller pulls in the Anthropic SDK, which is safe with
 // no key set: the client is constructed lazily on first use, so a server
 // without ANTHROPIC_API_KEY still boots and these routes answer 503.
-router.post('/ai/chat', requireAuth, ai.chat);
-router.get('/ai/history', requireAuth, ai.history);
+// The advisor is gated on a verified address: it costs real money per call and
+// is the obvious thing to point a throwaway signup at. `picks` is exempt — it
+// is a TMDB query with no model call behind it, and it renders on the home
+// screen, which an unverified account is explicitly still allowed to browse.
+router.post('/ai/chat', requireAuth, requireVerified, ai.chat);
+router.get('/ai/history', requireAuth, requireVerified, ai.history);
 router.get('/ai/picks', requireAuth, ai.picks);
 
 /* -------------------------------- messages -------------------------------- */
 
-router.get('/messages/conversations', requireAuth, messages.conversations);
+// Also gated: messaging reaches other people, so an unverified account must not
+// be able to use it. `unread-count` stays open because the nav badge polls it on
+// every screen, and a 403 storm there would be noise for no benefit.
+router.get('/messages/conversations', requireAuth, requireVerified, messages.conversations);
 router.get('/messages/unread-count', requireAuth, messages.unreadCount);
-router.get('/messages/:userId', requireAuth, messages.thread);
-router.post('/messages/:userId/send', requireAuth, messages.send);
-router.put('/messages/:userId/read', requireAuth, messages.markRead);
+router.get('/messages/:userId', requireAuth, requireVerified, messages.thread);
+router.post('/messages/:userId/send', requireAuth, requireVerified, messages.send);
+router.put('/messages/:userId/read', requireAuth, requireVerified, messages.markRead);
 
 /* ----------------------------- notifications ------------------------------ */
 
 router.get('/notifications', requireAuth, notifications.list);
+// Before '/notifications/:id/read', or ':id' would swallow 'count'.
+router.get('/notifications/count', requireAuth, notifications.count);
+router.post('/notifications/read', requireAuth, notifications.markRead);
 router.put('/notifications/read-all', requireAuth, notifications.readAll);
 router.put('/notifications/:id/read', requireAuth, notifications.readOne);
+
+/* ----------------------------- follow requests ---------------------------- */
+
+router.post('/follow-requests/:id/accept', requireAuth, notifications.acceptRequest);
+router.post('/follow-requests/:id/decline', requireAuth, notifications.declineRequest);
 
 /* -------------------------------- activity -------------------------------- */
 
 router.get('/activity/feed', requireAuth, activity.feed);
 router.get('/activity/user/:userId/stats', optionalAuth, activity.statsForUser);
 router.get('/activity/user/:userId', optionalAuth, activity.forUser);
-
-/* ---------------------------------- pro ----------------------------------- */
-
-router.post('/pro/checkout', requireAuth, pro.checkout);
 
 export default router;
