@@ -44,6 +44,8 @@ router.get('/users/:id/followers', optionalAuth, users.followers);
 router.get('/users/:id/following', optionalAuth, users.following);
 router.post('/users/:id/follow', requireAuth, users.follow);
 router.delete('/users/:id/follow', requireAuth, users.unfollow);
+router.post('/users/:id/block', requireAuth, users.block);
+router.delete('/users/:id/block', requireAuth, users.unblock);
 // Last among /users routes: a bare `:username` would otherwise swallow
 // `/users/search` and `/users/me`.
 router.get('/users/:username', optionalAuth, users.getByUsername);

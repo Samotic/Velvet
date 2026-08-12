@@ -11,13 +11,16 @@ import {
   UploadNotConfiguredError,
 } from '../services/cloudinary';
 import {
+  blockUser,
   createFollow,
   isBlockedBetween,
   NotFoundError,
   relationBetween,
   relationMap,
   removeFollow,
+  unblockUser,
 } from '../services/social';
+import { consume } from '../services/rateLimit';
 import { Follow } from '../models/Follow';
 import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
@@ -169,6 +172,12 @@ export async function follow(req: Request, res: Response): Promise<Response> {
       return fail(res, "Can't follow this account", 403);
     }
 
+    const limit = await consume(me, 'follow');
+    if (!limit.ok) {
+      res.setHeader('Retry-After', String(limit.retryAfter));
+      return fail(res, `RATE_LIMITED: Slow down for a minute.|${limit.retryAfter}`, 429);
+    }
+
     const outcome = await createFollow(me, targetId);
 
     // Only on the call that actually created the edge — otherwise a double-tap
@@ -218,6 +227,42 @@ export async function unfollow(req: Request, res: Response): Promise<Response> {
   } catch (err) {
     console.error('unfollow error:', err);
     return fail(res, 'Could not unfollow that user', 500);
+  }
+}
+
+/* -------------------------------- blocking ------------------------------- */
+
+/** POST /api/users/:id/block — severs the relationship in both directions. */
+export async function block(req: Request, res: Response): Promise<Response> {
+  try {
+    const targetId = req.params.id;
+    const me = req.user!.userId;
+
+    if (!isObjectId(targetId)) return fail(res, 'User not found', 404);
+    if (targetId === me) return fail(res, 'You cannot block yourself', 400);
+
+    const target = await User.findById(targetId).select('_id');
+    if (!target) return fail(res, 'User not found', 404);
+
+    await blockUser(me, targetId);
+    return ok(res, { blocked: true });
+  } catch (err) {
+    console.error('block error:', err);
+    return fail(res, 'Could not block that account', 500);
+  }
+}
+
+/** DELETE /api/users/:id/block — lifts it. Restores nothing. */
+export async function unblock(req: Request, res: Response): Promise<Response> {
+  try {
+    const targetId = req.params.id;
+    if (!isObjectId(targetId)) return fail(res, 'User not found', 404);
+
+    await unblockUser(req.user!.userId, targetId);
+    return ok(res, { blocked: false });
+  } catch (err) {
+    console.error('unblock error:', err);
+    return fail(res, 'Could not unblock that account', 500);
   }
 }
 

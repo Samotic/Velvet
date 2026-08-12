@@ -3,6 +3,7 @@ import mongoose, { Types, type ClientSession } from 'mongoose';
 import { env } from '../config/env';
 import { Block } from '../models/Block';
 import { Follow, type FollowStatus } from '../models/Follow';
+import { Notification } from '../models/Notification';
 import { User } from '../models/User';
 import { NO_RELATION, type ViewerRelation } from '../utils/serialize';
 
@@ -166,6 +167,53 @@ export async function applyCounters(
     { $inc: { pendingRequestCount: delta } },
     opts,
   );
+}
+
+/**
+ * Blocks `blockedId` and severs everything between the two.
+ *
+ * A block that only prevents *future* follows leaves the existing relationship
+ * intact, which is the opposite of what the person pressing it wants. So this
+ * removes edges in both directions, pending requests both ways, and the
+ * notifications either has from the other — then fixes the counters those
+ * deletions invalidated.
+ */
+export async function blockUser(blockerId: string, blockedId: string): Promise<void> {
+  if (blockerId === blockedId) throw new Error('Cannot block yourself');
+
+  try {
+    await Block.create({ blockerId: oid(blockerId), blockedId: oid(blockedId) });
+  } catch (err) {
+    // Already blocked. Idempotent — fall through and re-run the teardown, which
+    // is harmless and repairs a half-finished previous attempt.
+    if (!isDuplicateKey(err)) throw err;
+  }
+
+  const pair = [
+    { followerId: oid(blockerId), followingId: oid(blockedId) },
+    { followerId: oid(blockedId), followingId: oid(blockerId) },
+  ];
+
+  // Read before deleting: the counters can only be corrected by knowing what
+  // each edge's status was.
+  const edges = await Follow.find({ $or: pair }).lean();
+  await Follow.deleteMany({ $or: pair });
+
+  for (const e of edges) {
+    await applyCounters(e.status, String(e.followerId), String(e.followingId), -1, null);
+  }
+
+  await Notification.deleteMany({
+    $or: [
+      { userId: oid(blockerId), fromUserId: oid(blockedId) },
+      { userId: oid(blockedId), fromUserId: oid(blockerId) },
+    ],
+  });
+}
+
+/** Lifts a block. Does not restore anything — the edges are gone for good. */
+export async function unblockUser(blockerId: string, blockedId: string): Promise<void> {
+  await Block.deleteOne({ blockerId: oid(blockerId), blockedId: oid(blockedId) });
 }
 
 /** Thrown when the follow target does not exist, so the route can answer 404. */
