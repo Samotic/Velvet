@@ -1,17 +1,17 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { useToast } from '@/components/Toast';
-import { Avatar } from '@/components/ui/Avatar';
 import { EmptyState, RowsSkeleton } from '@/components/ui/States';
-import { VelvetMark } from '@/components/icons';
-import { notificationLine } from '@/components/notifications/line';
-import { api } from '@/lib/api';
+import { NotificationCard } from '@/components/notifications/NotificationCard';
+import { groupLabel, groupNotifications } from '@/components/notifications/aggregate';
 import type { Notification } from '@/lib/contentTypes';
-import { timeAgo } from '@/lib/format';
+import {
+  getNotifications,
+  markNotificationsRead,
+} from '@/lib/notifications';
 import { onSocket } from '@/lib/socket';
 
 export default function NotificationsPage() {
@@ -23,15 +23,18 @@ export default function NotificationsPage() {
 }
 
 function Notifications() {
-  const router = useRouter();
   const toast = useToast();
 
   const [items, setItems] = useState<Notification[] | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback((signal?: AbortSignal) => {
-    api
-      .get<{ notifications: Notification[] }>('/api/notifications', { signal })
-      .then((r) => setItems(r.notifications))
+    getNotifications({ signal })
+      .then((r) => {
+        setItems(r.notifications);
+        setCursor(r.nextCursor);
+      })
       .catch((err) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         setItems([]);
@@ -53,27 +56,37 @@ function Notifications() {
     [],
   );
 
+  async function loadMore() {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const r = await getNotifications({ cursor });
+      setItems((prev) => [...(prev ?? []), ...r.notifications]);
+      setCursor(r.nextCursor);
+    } catch {
+      toast.bad('Could not load more');
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   async function markAll() {
     const snapshot = items;
     setItems((prev) => prev?.map((n) => ({ ...n, read: true })) ?? prev);
     try {
-      await api.put('/api/notifications/read-all');
+      await markNotificationsRead();
     } catch {
       setItems(snapshot ?? null);
       toast.bad('Could not mark those as read');
     }
   }
 
-  async function open(n: Notification) {
-    const { href } = notificationLine(n);
-    if (!n.read) {
-      setItems((prev) => prev?.map((x) => (x.id === n.id ? { ...x, read: true } : x)) ?? prev);
-      // Fire and forget: navigating matters more than the read receipt.
-      void api.put(`/api/notifications/${n.id}/read`).catch(() => {});
-    }
-    router.push(href);
-  }
+  /** Keeps the list's copy in step when a card resolves its own action. */
+  const patch = useCallback((id: string, next: Partial<Notification>) => {
+    setItems((prev) => prev?.map((n) => (n.id === id ? { ...n, ...next } : n)) ?? prev);
+  }, []);
 
+  const groups = useMemo(() => groupNotifications(items ?? []), [items]);
   const unread = (items ?? []).filter((n) => !n.read).length;
 
   return (
@@ -98,38 +111,97 @@ function Notifications() {
         ) : items.length === 0 ? (
           <EmptyState
             icon="◔"
-            title="Nothing yet"
-            text="Follows, likes, replies and your weekly AI picks all land here."
+            title="No notifications yet"
+            text="When someone follows you, it'll show up here."
             action={{ label: 'Find people', href: '/search?mode=people' }}
           />
         ) : (
-          items.map((n) => {
-            const line = notificationLine(n);
-            return (
-              <button
-                key={n.id}
-                type="button"
-                className={`notif${n.read ? '' : ' unread'}`}
-                style={{ width: '100%', textAlign: 'left', background: 'none' }}
-                onClick={() => void open(n)}
-              >
-                {line.system ? (
-                  <span className="notif-mark" aria-hidden>
-                    <VelvetMark size={19} />
-                  </span>
-                ) : (
-                  <Avatar src={n.from?.profilePhoto} name={n.from?.displayName} />
-                )}
+          <>
+            {groups.map((g) =>
+              g.kind === 'single' ? (
+                <NotificationCard
+                  key={g.key}
+                  n={g.item}
+                  onChange={(next) => patch(g.item.id, next)}
+                />
+              ) : (
+                <FollowerGroup key={g.key} items={g.items} onPatch={patch} />
+              ),
+            )}
 
-                <span className="notif-body">
-                  <span className="notif-text">{line.text}</span>
-                  <span className="notif-time">{timeAgo(n.createdAt)}</span>
-                </span>
-              </button>
-            );
-          })
+            {cursor && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 22 }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={loadingMore}
+                  onClick={() => void loadMore()}
+                >
+                  {loadingMore ? 'Loading…' : 'Load more'}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A collapsed run of follows. Expands into the individual rows, each keeping
+ * its own Follow-back button — the summary is a shortcut past the noise, not a
+ * replacement for the actions underneath it.
+ */
+function FollowerGroup({
+  items,
+  onPatch,
+}: {
+  items: Notification[];
+  onPatch: (id: string, next: Partial<Notification>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anyUnread = items.some((n) => !n.read);
+
+  return (
+    <div className="notif-group">
+      <button
+        type="button"
+        className={`notif-group-head${anyUnread ? ' unread' : ''}`}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="notif-group-avatars" aria-hidden="true">
+          {items.slice(0, 3).map((n) => {
+            const a = n.actor ?? n.from;
+            return (
+              <span
+                key={n.id}
+                className="notif-group-av"
+                style={
+                  a?.profilePhoto
+                    ? { backgroundImage: `url(${a.profilePhoto})` }
+                    : undefined
+                }
+              >
+                {!a?.profilePhoto && (a?.displayName?.[0] ?? '?')}
+              </span>
+            );
+          })}
+        </span>
+        <span className="notif-group-text">{groupLabel(items)}</span>
+        <span className="notif-group-chev" aria-hidden="true">
+          {open ? '−' : '+'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="notif-group-items">
+          {items.map((n) => (
+            <NotificationCard key={n.id} n={n} onChange={(next) => onPatch(n.id, next)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

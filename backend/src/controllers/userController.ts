@@ -88,6 +88,20 @@ export async function updateMe(req: Request, res: Response): Promise<Response> {
     }
     if (body.favouriteGenres !== undefined) patch.favouriteGenres = cleanGenres(body.favouriteGenres);
 
+    /**
+     * The privacy toggle. Switching to private deliberately does **not**
+     * convert existing followers into pending requests — they were accepted
+     * under the terms in force at the time, and silently revoking access to
+     * people who already had it would be a surprise in the wrong direction.
+     * It governs who may follow from now on.
+     */
+    if (body.profileVisibility !== undefined) {
+      if (body.profileVisibility !== 'public' && body.profileVisibility !== 'private') {
+        return fail(res, 'Unrecognised profile visibility', 422);
+      }
+      patch.profileVisibility = body.profileVisibility;
+    }
+
     if (Array.isArray(body.pinnedFilms)) {
       const pins = body.pinnedFilms
         .filter((p): p is Record<string, unknown> => typeof p === 'object' && p !== null)

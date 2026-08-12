@@ -24,8 +24,14 @@ export function notificationLine(n: Notification): {
   const profileHref = n.from ? `/profile/${n.from.username}` : '/notifications';
 
   switch (n.type) {
+    // Pre-split rows still in the database; reads the same as new_follower.
     case 'follow':
+    case 'new_follower':
       return { text: `${who} started following you`, href: profileHref, system: false };
+    case 'follow_request':
+      return { text: `${who} wants to follow you`, href: profileHref, system: false };
+    case 'follow_accepted':
+      return { text: `${who} accepted your follow request`, href: profileHref, system: false };
     case 'review_like':
       return { text: `${who} liked your review of ${title}`, href: contentHref, system: false };
     case 'review_reply':

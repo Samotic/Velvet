@@ -24,12 +24,32 @@ export function getFollowing(userId: string, signal?: AbortSignal): Promise<Publ
     .then((r) => r.users);
 }
 
-export function followUser(userId: string): Promise<void> {
-  return api.post(`/api/users/${userId}/follow`).then(() => undefined);
+/** What pressing Follow produced. `pending` means the target is private. */
+export type FollowStatus = 'accepted' | 'pending';
+
+/**
+ * Follows, or requests to. The result decides the button's next label:
+ * `accepted` → "Following", `pending` → "Requested".
+ *
+ * Idempotent server-side, so a double-tap resolves to the same state rather
+ * than erroring.
+ */
+export function followUser(userId: string): Promise<FollowStatus> {
+  return api.post<{ status: FollowStatus }>(`/api/users/${userId}/follow`).then((r) => r.status);
 }
 
+/** Unfollow, or withdraw a pending request — the same call either way. */
 export function unfollowUser(userId: string): Promise<void> {
   return api.del(`/api/users/${userId}/follow`).then(() => undefined);
+}
+
+/** Severs the relationship in both directions and hides each from the other. */
+export function blockUser(userId: string): Promise<void> {
+  return api.post(`/api/users/${userId}/block`).then(() => undefined);
+}
+
+export function unblockUser(userId: string): Promise<void> {
+  return api.del(`/api/users/${userId}/block`).then(() => undefined);
 }
 
 /** Everything the profile screen's tabs need, in one call per tab. */

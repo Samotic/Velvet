@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { useToast } from '@/components/Toast';
-import { Crown, Logout } from '@/components/icons';
+import { Logout } from '@/components/icons';
 import { longDate } from '@/lib/format';
 
 export default function SettingsPage() {
@@ -18,9 +18,32 @@ export default function SettingsPage() {
 }
 
 function Settings() {
-  const { user, logout } = useAuth();
+  const { user, logout, updateProfile } = useAuth();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+
+  const [isPrivate, setIsPrivate] = useState(user?.profileVisibility === 'private');
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
+
+  /**
+   * Optimistic: the switch moves under the finger, then reconciles. A toggle
+   * that waits for a round trip feels broken even when it is working.
+   */
+  async function togglePrivacy() {
+    const next = !isPrivate;
+    setIsPrivate(next);
+    setSavingPrivacy(true);
+    try {
+      // updateProfile also refreshes the cached user, so the toggle survives
+      // a navigation without a second fetch.
+      await updateProfile({ profileVisibility: next ? 'private' : 'public' });
+    } catch {
+      setIsPrivate(!next);
+      toast.bad('Could not change that setting');
+    } finally {
+      setSavingPrivacy(false);
+    }
+  }
 
   async function signOut() {
     setBusy(true);
@@ -55,30 +78,56 @@ function Settings() {
       </section>
 
       <section style={{ marginTop: 34 }}>
-        <div className="filter-label">Subscription</div>
+        <div className="filter-label">Privacy</div>
         <div className="rate-card" style={{ marginTop: 12 }}>
-          <Row
-            label="Plan"
-            value={user?.isPro ? 'Velvet Pro' : 'Free'}
-          />
-          {user?.isPro && user.proExpiresAt && (
-            <Row label="Renews" value={longDate(user.proExpiresAt)} />
-          )}
-          {!user?.isPro && (
+          <div className="settings-toggle-row">
+            <div>
+              <div className="settings-toggle-label">Private account</div>
+              <p className="settings-toggle-help">
+                {isPrivate
+                  ? 'New followers have to be approved. People already following you keep access.'
+                  : 'Anyone can follow you, and they see your ratings straight away.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isPrivate}
+              aria-label="Private account"
+              className={`settings-switch${isPrivate ? ' on' : ''}`}
+              disabled={savingPrivacy}
+              onClick={() => void togglePrivacy()}
+            >
+              <span className="settings-switch-knob" />
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section style={{ marginTop: 34 }}>
+        <div className="filter-label">AI advisor</div>
+        <div className="rate-card" style={{ marginTop: 12 }}>
+          {user?.isPro ? (
+            <Row label="Daily messages" value="Unlimited" />
+          ) : (
             <Row
-              label="AI messages"
-              value={`${user?.aiMessagesUsedToday ?? 0} used today of 10`}
+              label="Messages today"
+              value={`${user?.aiMessagesUsedToday ?? 0} used of 10`}
             />
           )}
 
-          <Link
-            href="/pro"
-            className={user?.isPro ? 'btn-outline' : 'btn-fill'}
-            style={{ marginTop: 18 }}
+          <p
+            style={{
+              marginTop: 14,
+              fontSize: 14,
+              color: 'var(--muted)',
+              fontWeight: 300,
+              lineHeight: 1.6,
+            }}
           >
-            <Crown size={15} />
-            {user?.isPro ? 'Manage subscription' : 'Upgrade to Pro'}
-          </Link>
+            Velvet is free and always will be. The daily limit is only there to
+            keep the advisor&rsquo;s running costs in check — it resets each morning.
+          </p>
         </div>
       </section>
 

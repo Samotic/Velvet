@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
+import { getUnreadCount, markNotificationsRead } from '@/lib/notifications';
 import { timeAgo } from '@/lib/format';
 import type { Notification } from '@/lib/contentTypes';
 import { onSocket } from '@/lib/socket';
@@ -13,7 +14,6 @@ import { Avatar } from './ui/Avatar';
 import { useAuth } from './auth/AuthProvider';
 import {
   Bell,
-  Crown,
   Logout,
   MessageIcon,
   Profile as ProfileIcon,
@@ -73,6 +73,62 @@ export function TopNav() {
     void loadCounts();
   }, [loadCounts]);
 
+  /**
+   * The bell's polling loop.
+   *
+   * Three rules, and the third is the one that pays for itself: polling stops
+   * entirely while the tab is hidden. A backgrounded tab left open all day
+   * would otherwise fire a request every 45s forever, and nobody is looking at
+   * the badge. Coming back to the tab polls immediately, so the pause costs no
+   * freshness — the count is correct by the time it's visible again.
+   *
+   * Socket pushes are still the primary path; this only catches what a dropped
+   * connection missed.
+   */
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        setUnreadNotifs(await getUnreadCount());
+      } catch {
+        // A quiet nav beats an error banner for a background count.
+      }
+    };
+
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(() => void poll(), 45_000);
+    };
+    const stop = () => {
+      if (!timer) return;
+      clearInterval(timer);
+      timer = null;
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void poll();
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === 'visible') start();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onVisibility);
+
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onVisibility);
+    };
+  }, [isAuthenticated]);
+
   // Live pushes: a new notification bumps the bell, a new message bumps the
   // envelope — unless the user is already in the messages section.
   useEffect(() => {
@@ -117,17 +173,31 @@ export function TopNav() {
   // A route change should never leave a dropdown hanging open.
   useEffect(() => setOpenMenu(null), [pathname]);
 
+  /**
+   * Opens the panel, or closes it and marks what was on screen read.
+   *
+   * Marking on **close**, not open: people open the bell, glance, and close it.
+   * Marking on open destroys the unread highlighting in the very moment they
+   * are trying to read it, so the distinction they opened it for is gone
+   * before their eye reaches the list.
+   */
   async function openBell() {
     const next = openMenu === 'bell' ? null : 'bell';
     setOpenMenu(next);
-    if (next === 'bell' && unreadNotifs > 0) {
-      setUnreadNotifs(0);
-      try {
-        await api.put('/api/notifications/read-all');
-        setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
-      } catch {
-        void loadCounts();
-      }
+
+    if (next !== null) return; // opening — nothing to settle yet
+
+    const seen = notifs.filter((n) => !n.read).map((n) => n.id);
+    if (!seen.length) return;
+
+    setUnreadNotifs(0);
+    setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
+    try {
+      // Only what was actually on screen, not everything — a count of 40 with
+      // 6 shown must not silently clear the 34 they never saw.
+      setUnreadNotifs(await markNotificationsRead(seen));
+    } catch {
+      void loadCounts();
     }
   }
 
@@ -232,11 +302,6 @@ export function TopNav() {
                 )}
               </Link>
 
-              <Link href="/pro" className={`pro-pill${user?.isPro ? ' on' : ''}`}>
-                <Crown size={13} />
-                {user?.isPro ? 'Pro' : 'Go Pro'}
-              </Link>
-
               <div style={{ position: 'relative' }}>
                 <button
                   type="button"
@@ -296,7 +361,7 @@ export function TopNav() {
             </>
           ) : (
             <>
-              <Link href="/login" className="btn-secondary" style={{ padding: '10px 18px' }}>
+              <Link href="/signin" className="btn-secondary" style={{ padding: '10px 18px' }}>
                 Sign in
               </Link>
               <Link href="/onboarding" className="btn-fill" style={{ padding: '10px 18px' }}>

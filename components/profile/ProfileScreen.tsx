@@ -92,19 +92,74 @@ export function ProfileScreen({ username }: { username: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, tab]);
 
+  /**
+   * Follow → Requested → Following, and back.
+   *
+   * Three states rather than two, because a private account turns the press
+   * into a request that has not been granted yet. Pressing "Requested"
+   * withdraws it — the same DELETE that unfollows.
+   *
+   * The optimistic follower count only moves for an *accepted* follow. A
+   * pending request is not a follower, so incrementing it there would show a
+   * number the server disagrees with the moment the page reloads.
+   */
   const toggleFollow = useCallback(async () => {
     if (!profile) return;
-    const next = !following;
-    setFollowing(next);
-    setProfile((p) =>
-      p ? { ...p, followerCount: p.followerCount + (next ? 1 : -1) } : p,
-    );
+
+    const wasFollowing = following;
+    const wasRequested = profile.followRequested;
+    const leaving = wasFollowing || wasRequested;
+
+    if (leaving) {
+      setFollowing(false);
+      setProfile((p) =>
+        p
+          ? {
+              ...p,
+              followRequested: false,
+              followerCount: p.followerCount - (wasFollowing ? 1 : 0),
+            }
+          : p,
+      );
+      try {
+        await unfollowUser(profile.id);
+      } catch (err) {
+        setFollowing(wasFollowing);
+        setProfile((p) =>
+          p
+            ? {
+                ...p,
+                followRequested: wasRequested,
+                followerCount: p.followerCount + (wasFollowing ? 1 : 0),
+              }
+            : p,
+        );
+        toast.bad(err instanceof ApiError ? err.message : 'Could not update follow');
+      }
+      return;
+    }
+
+    // The server decides accepted vs pending; assume the common case and
+    // correct from the response.
+    setFollowing(true);
+    setProfile((p) => (p ? { ...p, followerCount: p.followerCount + 1 } : p));
     try {
-      if (next) await followUser(profile.id);
-      else await unfollowUser(profile.id);
+      const status = await followUser(profile.id);
+      const accepted = status === 'accepted';
+      setFollowing(accepted);
+      setProfile((p) =>
+        p
+          ? {
+              ...p,
+              followRequested: !accepted,
+              // Undo the optimistic bump if it turned out to be a request.
+              followerCount: p.followerCount - (accepted ? 0 : 1),
+            }
+          : p,
+      );
     } catch (err) {
-      setFollowing(!next);
-      setProfile((p) => (p ? { ...p, followerCount: p.followerCount + (next ? -1 : 1) } : p));
+      setFollowing(false);
+      setProfile((p) => (p ? { ...p, followerCount: p.followerCount - 1 } : p));
       toast.bad(err instanceof ApiError ? err.message : 'Could not update follow');
     }
   }, [following, profile, toast]);
@@ -180,14 +235,19 @@ export function ProfileScreen({ username }: { username: string }) {
             <>
               <button
                 type="button"
-                className={following ? 'btn-outline on' : 'btn-fill'}
+                className={following || profile.followRequested ? 'btn-outline on' : 'btn-fill'}
                 onClick={() => void toggleFollow()}
               >
-                {following ? 'Following ✓' : 'Follow'}
+                {following ? 'Following ✓' : profile.followRequested ? 'Requested' : 'Follow'}
               </button>
-              <Link href={`/messages/${profile.id}`} className="btn-secondary">
-                Message
-              </Link>
+              {/* Mutual follows only. `following` is the local optimistic
+                  state, so the button appears the instant you follow back
+                  someone who already follows you. */}
+              {following && profile.isFollowedBy && (
+                <Link href={`/messages/${profile.id}`} className="btn-secondary">
+                  Message
+                </Link>
+              )}
             </>
           )}
         </div>

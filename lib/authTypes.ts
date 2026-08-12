@@ -21,11 +21,20 @@ export interface PinnedFilm {
   poster: string | null;
 }
 
+/** How the account was created. A `google` account has no password at all. */
+export type AuthProvider = 'local' | 'google';
+
 export interface AuthUser {
   id: string;
   email: string;
   username: string;
   displayName: string;
+  authProvider: AuthProvider;
+  /**
+   * Google accounts arrive verified. Local signups start false and flip when
+   * the emailed link is opened — the advisor and messaging are gated on it.
+   */
+  emailVerified: boolean;
   profilePhoto: string | null;
   bio: string;
   age?: number;
@@ -33,14 +42,25 @@ export interface AuthUser {
   favouriteGenres: string[];
   favouriteMood?: Mood;
   pinnedFilms: PinnedFilm[];
+  /** @deprecated The graph lives in the `follows` collection now. */
   following: string[];
+  /** @deprecated See `following`. */
   followers: string[];
+  /** Whether new follows need approval. Toggled in settings. */
+  profileVisibility: 'public' | 'private';
+  /** Denormalized, accepted edges only — never counts a pending request. */
+  followerCount: number;
+  followingCount: number;
+  /** Requests awaiting this user's decision. */
+  pendingRequestCount: number;
+  /** Lifts the advisor's daily cap. Set by hand — there is no paid tier. */
   isPro: boolean;
-  proExpiresAt: string | null;
   aiMessagesUsedToday: number;
   aiMessagesResetAt: string;
   /** Drives the /onboarding gate — false sends a new account through setup. */
   onboardingCompleted: boolean;
+  /** Highest step finished: 0 none, 1 profile, 2 avatar, 3 taste. Drives resume. */
+  onboardingStep: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +83,20 @@ export interface PublicProfile {
   isPro: boolean;
   /** Whether the signed-in user follows them. False when logged out. */
   isFollowing: boolean;
+  /**
+   * A follow request sent but not yet accepted — the middle button state.
+   * Mutually exclusive with `isFollowing`: an edge is pending or accepted,
+   * never both.
+   */
+  followRequested: boolean;
+  /** Whether a follow needs their approval. */
+  profileVisibility: 'public' | 'private';
+  /**
+   * Whether they follow the signed-in user back. False when logged out.
+   * `isFollowing && isFollowedBy` is the mutual-follow test that gates
+   * messaging — see the note on `isMutual` in the API's messageController.
+   */
+  isFollowedBy: boolean;
   /** True when this is the signed-in user's own profile. */
   isMe: boolean;
   createdAt: string;
@@ -73,16 +107,32 @@ export interface AuthPayload {
   user: AuthUser;
 }
 
+/**
+ * `/signup` collects only an email and a password — the handle and display name
+ * are step 1 of onboarding, so both are optional here. Supplying them creates a
+ * fully formed account in one call and skips that step.
+ */
 export interface RegisterInput {
   email: string;
-  username: string;
-  displayName: string;
   password: string;
+  username?: string;
+  displayName?: string;
+}
+
+/** Step 1 of onboarding: the only required step. */
+export interface OnboardingProfileInput {
+  displayName: string;
+  username: string;
 }
 
 export interface LoginInput {
   email: string;
   password: string;
+}
+
+export interface ResetPasswordInput {
+  token: string;
+  newPassword: string;
 }
 
 /** The payload for POST /api/auth/complete-onboarding (steps 3 and 4). */
@@ -104,4 +154,6 @@ export interface ProfileUpdateInput {
   favouriteMood?: Mood;
   profilePhoto?: string | null;
   pinnedFilms?: PinnedFilm[];
+  /** The privacy toggle. Governs future follows only. */
+  profileVisibility?: 'public' | 'private';
 }

@@ -130,22 +130,43 @@ export interface WatchlistItem {
 /* ---------------------------- notifications ------------------------------ */
 
 export type NotificationType =
+  /** @deprecated Split into `new_follower` / `follow_request`. Old rows only. */
   | 'follow'
+  | 'new_follower'
+  | 'follow_request'
+  | 'follow_accepted'
   | 'review_like'
   | 'review_reply'
   | 'message'
   | 'ai_picks'
   | 'available';
 
+/** How a `follow_request` card was resolved. Null on every other type. */
+export type ActionState = 'pending' | 'accepted' | 'declined';
+
+/** The actor, plus the social proof the card shows beneath their handle. */
+export interface NotificationActor extends UserRef {
+  ratingCount: number;
+}
+
 export interface Notification {
   id: string;
   type: NotificationType;
   /** Null for system notifications (`ai_picks`, `available`). */
   from: UserRef | null;
+  /** Same person as `from`, with `ratingCount`. Null for system rows. */
+  actor: NotificationActor | null;
   contentId: string | null;
   contentType: ContentType | null;
   contentTitle: string | null;
   read: boolean;
+  actionState: ActionState | null;
+  /** The Follow edge id — what accept/decline act on. */
+  followRequestId: string | null;
+  /** Drives Follow back: true only for a settled follow, not a request. */
+  viewerFollowsActor: boolean;
+  /** So the button reads "Requested" rather than offering Follow again. */
+  viewerRequestedActor: boolean;
   createdAt: string;
 }
 
