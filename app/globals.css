@@ -3688,23 +3688,47 @@ textarea.input {
 }
 .taste-stars {
   display: flex;
-  gap: 2px;
-  margin-top: 6px;
+  gap: 0;
+  margin-top: 4px;
+  margin-left: -4px;
 }
+/* Padding is the hit area, not decoration: this is a control people press
+   twenty times in a row, and a 17px glyph is a 17px target without it. */
 .taste-star {
   background: none;
   border: none;
-  padding: 2px;
+  padding: 5px 4px;
   cursor: pointer;
   color: var(--muted);
   line-height: 0;
   transition: color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+/* StarOutline carries no width/height of its own — it expects the CSS to size
+   it, the way `.star svg` does on the rate card. Without this rule an unrated
+   star renders at the SVG default (300x150), which tears the grid apart and
+   puts an invisible box over the posters so nothing is clickable. */
+.taste-star svg {
+  width: 17px;
+  height: 17px;
+  display: block;
 }
 .taste-star:hover {
   transform: translateY(-1px);
 }
 .taste-star.on {
   color: var(--accent);
+}
+/* Five 25px targets is 184px, wider than a 2-up cell on a phone (~161px), and
+   an overflowing star row would push the fifth star out of reach — the exact
+   failure this control cannot have. Shrink the glyph, keep the row intact. */
+@media (max-width: 420px) {
+  .taste-star {
+    padding: 5px 2px;
+  }
+  .taste-star svg {
+    width: 15px;
+    height: 15px;
+  }
 }
 /* Pinned, because the submit button is the point of the screen and the grid is
    taller than the viewport. */
