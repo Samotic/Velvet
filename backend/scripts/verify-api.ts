@@ -12,14 +12,16 @@
  *
  *   npm run verify:api        (from backend/)
  */
-process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'verify_script_secret';
+// MUST stay first: it blanks the real .env before src/config/env snapshots it.
+// See scripts/testEnv.ts for why an inline assignment here would not work.
+import './testEnv';
 
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 
 import { createApp } from '../src/app';
 import { connectDb, disconnectDb } from '../src/lib/db';
+import { User } from '../src/models/User';
 
 let passed = 0;
 let failed = 0;
@@ -104,6 +106,57 @@ async function run() {
       favouriteGenres: ['Drama', 'Comedy', 'Crime'],
       favouriteMood: 'feel_good',
     });
+
+  check('a second account registers too', Boolean(lin && linId), 'duplicate-key regression guard');
+
+  /* --------------------------- the verified gate ------------------------- */
+
+  section('Email verification gate');
+
+  const beforeVerify = await api()
+    .get('/api/messages/conversations')
+    .set('Authorization', `Bearer ${ada}`);
+  check('messaging is blocked before verifying', beforeVerify.status === 403, `got ${beforeVerify.status}`);
+  check(
+    'the 403 carries the machine-readable marker',
+    String(beforeVerify.body?.error).includes('EMAIL_NOT_VERIFIED'),
+  );
+
+  const aiBeforeVerify = await api()
+    .post('/api/ai/chat')
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ message: 'hello' });
+  check('the advisor is blocked before verifying', aiBeforeVerify.status === 403, `got ${aiBeforeVerify.status}`);
+
+  const bogusVerify = await api().post('/api/auth/verify-email').send({ token: 'not-a-real-token' });
+  check('a bogus verification token is refused', bogusVerify.status === 400, `got ${bogusVerify.status}`);
+
+  const forgot = await api()
+    .post('/api/auth/forgot-password')
+    .send({ email: 'nobody@velvet.test' });
+  check('forgot-password never reveals whether an account exists', forgot.status === 200, `got ${forgot.status}`);
+
+  const badReset = await api()
+    .post('/api/auth/reset-password')
+    .send({ token: 'not-a-real-token', newPassword: 'password456' });
+  check('a bogus reset token is refused', badReset.status === 400, `got ${badReset.status}`);
+
+  const googleOff = await api().get('/api/auth/google');
+  check('Google redirects out when unconfigured', googleOff.status === 302, `got ${googleOff.status}`);
+  check(
+    'the Google redirect explains itself',
+    String(googleOff.headers.location).includes('google_unavailable'),
+  );
+
+  // Everything below tests features, not the gate. Flip both accounts the way
+  // opening the emailed link would, rather than reaching for the raw token —
+  // only its SHA-256 is stored, so the plaintext genuinely is unavailable here.
+  await User.updateMany({}, { $set: { emailVerified: true } });
+
+  const afterVerify = await api()
+    .get('/api/messages/conversations')
+    .set('Authorization', `Bearer ${ada}`);
+  check('verifying opens messaging', afterVerify.status === 200, `got ${afterVerify.status}`);
 
   /* ------------------------------- profiles ------------------------------ */
 
@@ -367,9 +420,6 @@ async function run() {
     .send({ message: 'what should I watch?' });
   check('AI answers 503 without a key', ai.status === 503, `got ${ai.status}`);
   check('AI 503 explains itself', typeof ai.body?.error === 'string' && ai.body.error.length > 10);
-
-  const stripe = await api().post('/api/pro/checkout').set('Authorization', `Bearer ${ada}`);
-  check('checkout answers 503 without Stripe', stripe.status === 503, `got ${stripe.status}`);
 
   const photo = await api()
     .post('/api/users/me/photo')

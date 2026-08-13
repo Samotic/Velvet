@@ -1,7 +1,10 @@
 import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
 
+import { FeedCache } from '../models/FeedCache';
 import { Rating } from '../models/Rating';
+import { computeNeighborsForUser, needsRecompute } from '../lib/cf/neighbors';
+import { recomputeUserStats } from '../lib/cf/stats';
 import { viewerId } from '../middleware/auth';
 import { userStats } from '../services/stats';
 import { fail, ok } from '../utils/http';
@@ -47,12 +50,33 @@ export async function upsert(req: Request, res: Response): Promise<Response> {
             ? body.genres.filter((g): g is string => typeof g === 'string')
             : [],
         },
+        // An explicit rating always supersedes an implicit one — a deliberate
+        // verdict outranks anything inferred from behaviour.
+        source: 'explicit',
         // Only on insert, so re-rating doesn't wipe likes and replies already
         // left on the review.
         $setOnInsert: { likes: [], replies: [] },
       },
       { new: true, upsert: true, runValidators: true },
     ).populate('userId', AUTHOR);
+
+    /**
+     * Keep the CF side in step with the write.
+     *
+     * `userStats` must be exact — every similarity this user takes part in
+     * centres on their mean — so it is awaited. The neighbour recompute is
+     * fired without awaiting: it is the expensive half, and criterion 5 asks
+     * for a changed feed within 30s, not within this request. The stale feed
+     * is dropped either way, so the next load rebuilds.
+     */
+    const userId = req.user!.userId;
+    await recomputeUserStats(userId);
+    await FeedCache.deleteOne({ userId });
+    if (await needsRecompute(userId)) {
+      void computeNeighborsForUser(userId).catch((e) =>
+        console.error('neighbour recompute failed:', e),
+      );
+    }
 
     return ok(res, { rating: toReview(doc.toObject(), req.user!.userId) }, 201);
   } catch (err) {
@@ -100,6 +124,53 @@ export async function myRating(req: Request, res: Response): Promise<Response> {
   } catch (err) {
     console.error('myRating error:', err);
     return fail(res, 'Could not load your rating', 500);
+  }
+}
+
+/**
+ * POST /api/ratings/content/mine — the caller's own score for many titles.
+ *
+ * The poster card shows the viewer's own star badge, so a grid of 20 cards
+ * used to mean 20 calls to `myRating`, and every rating write re-fired all of
+ * them. This answers the whole grid in one query.
+ *
+ * It returns bare numbers keyed by `type:id`, not full reviews: the badge only
+ * needs the score, and skipping the author populate keeps this cheap enough to
+ * call on every grid render.
+ */
+export async function myRatingsBulk(req: Request, res: Response): Promise<Response> {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const raw = Array.isArray(body.items) ? body.items : [];
+    if (raw.length === 0) return ok(res, { ratings: {} });
+
+    // Bounded so a crafted body can't turn one request into an unbounded $or.
+    const items = raw.slice(0, 100).flatMap((entry) => {
+      const it = (entry ?? {}) as Record<string, unknown>;
+      const contentId = str(it.contentId);
+      const contentType = it.contentType;
+      if (!contentId || !isContentType(contentType)) return [];
+      return [{ contentId, contentType }];
+    });
+
+    if (items.length === 0) return ok(res, { ratings: {} });
+
+    const rows = await Rating.find({
+      userId: req.user!.userId,
+      $or: items.map(({ contentId, contentType }) => ({ contentId, contentType })),
+    })
+      .select('contentId contentType rating')
+      .lean();
+
+    const ratings: Record<string, number> = {};
+    for (const row of rows) {
+      ratings[`${row.contentType}:${row.contentId}`] = row.rating;
+    }
+
+    return ok(res, { ratings });
+  } catch (err) {
+    console.error('myRatingsBulk error:', err);
+    return fail(res, 'Could not load your ratings', 500);
   }
 }
 

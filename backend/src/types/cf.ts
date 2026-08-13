@@ -37,6 +37,20 @@ export function parseItemKey(key: ItemKey): { type: ContentType; id: string } | 
 }
 
 /**
+ * Reads a tunable from the environment, falling back to the shipped default.
+ *
+ * Exists so `scripts/evaluateCF.ts` can sweep a parameter without editing
+ * source — §15 requires these be tuned against the harness, and a tuning loop
+ * that needs a code change per run does not get used.
+ */
+const tune = (name: string, fallback: number): number => {
+  const raw = process.env[`CF_${name}`];
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/**
  * Every tunable in one place, because §15 requires these be tuned against the
  * evaluation harness rather than by intuition — and a constant buried in a
  * function is a constant nobody tunes.
@@ -51,23 +65,23 @@ export const CF_PARAMS = {
    * Velvet currently has **zero** co-rated pairs, so 6 is the honest setting —
    * at 12 nothing would ever clear the floor. Raise it as the matrix fills.
    */
-  beta: 6,
+  beta: tune('BETA', 6),
   /** Neighbourhood size for prediction. */
-  K: 40,
+  K: tune('K', 40),
   /** Stored per user; the top-K is selected from these. */
   maxStoredNeighbors: 80,
   /** Below this a "neighbour" is indistinguishable from a stranger. */
-  minSim: 0.1,
+  minSim: tune('MIN_SIM', 0.1),
   /** Fewer co-rated items than this and the correlation means nothing. */
-  minCoRated: 3,
+  minCoRated: tune('MIN_CO_RATED', 3),
   /** Predictions need at least this many neighbours who actually rated the item. */
-  minNeighborsPerItem: 3,
+  minNeighborsPerItem: tune('MIN_NEIGHBORS_PER_ITEM', 3),
   /** Confidence damping: conf = Σsim / (Σsim + lambda). */
-  lambda: 3.0,
+  lambda: tune('LAMBDA', 3.0),
   /** No single neighbour may exceed this share of the similarity mass. */
   maxNeighborInfluence: 0.08,
   /** Weak tiebreaker only. If it dominates, the feed has collapsed to trending. */
-  popularityWeight: 0.15,
+  popularityWeight: tune('POPULARITY_WEIGHT', 0.15),
   /** Implicit rows count for less than a deliberate rating. */
   implicitWeight: 0.6,
   explicitWeight: 1.0,
