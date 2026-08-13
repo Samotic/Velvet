@@ -10,8 +10,12 @@ import { browse } from '@/lib/catalog';
 import type { CatalogSummary } from '@/lib/contentTypes';
 import { isGenreFilter, isSort, isTypeFilter, type SortId, type TypeFilterId } from '@/lib/homeFilters';
 
+import { getFeed, type FeedResponse } from '@/lib/feed';
+
 import { AiPicks } from './AiPicks';
+import { FeedRails } from './FeedRails';
 import { FilterBar } from './FilterBar';
+import { TastePicker } from './TastePicker';
 import { FriendsActivity } from './FriendsActivity';
 import { Hero } from './Hero';
 import { TopRated } from './TopRated';
@@ -37,6 +41,25 @@ export function HomeScreen() {
   const [items, setItems] = useState<CatalogSummary[] | null>(null);
   const [failed, setFailed] = useState(false);
 
+  /**
+   * The personalised feed, loaded alongside the catalogue rather than instead
+   * of it — the browse grid is still how you find something specific, and a
+   * feed that replaced it would make the filter bar dead weight.
+   *
+   * A failure here leaves `feed` null and the page renders exactly as it did
+   * before the recommender existed. That is the intended degradation: nobody
+   * loses the ability to browse because a neighbour job is behind.
+   */
+  const [feed, setFeed] = useState<FeedResponse | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getFeed({ signal: controller.signal })
+      .then(setFeed)
+      .catch(() => setFeed(null));
+    return () => controller.abort();
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     setItems(null);
@@ -58,11 +81,27 @@ export function HomeScreen() {
   const hero = items?.[0] ?? null;
   const cluster = items?.slice(0, 3) ?? [];
 
+  // Cold start takes the whole screen. Showing a generic grid alongside it
+  // would give the user something to scroll instead of the one action that
+  // makes every later visit personal.
+  if (feed?.needsSeeding) {
+    return <TastePicker onSeeded={setFeed} />;
+  }
+
   return (
     <>
       <Hero item={hero} cluster={cluster} loading={items === null} />
 
       <WatchStats />
+
+      {feed && feed.rails.length > 0 && (
+        <FeedRails
+          rails={feed.rails}
+          // A dismissal invalidates the server's cached feed, so refetch to
+          // pick up whatever moved into the freed slot.
+          onDismissed={() => void getFeed({ refresh: true }).then(setFeed).catch(() => {})}
+        />
+      )}
 
       <FilterBar filter={filter} genre={genre} sort={sort} />
 

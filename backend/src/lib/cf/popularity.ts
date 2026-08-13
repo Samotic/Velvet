@@ -36,6 +36,19 @@ export async function recomputePopularity(): Promise<{ items: number; users: num
     },
   ]);
 
+  /**
+   * Drop rows for items nobody rates any more.
+   *
+   * The aggregation only produces items that currently have ratings, so an
+   * upsert-only rebuild leaves the rest behind forever. Those stale rows are
+   * not inert: "Widely loved" and the cold-start grid both read this
+   * collection, so a deleted account's ratings would keep recommending titles
+   * that no longer have a single rater.
+   */
+  const liveKeys = rows.map((r) => itemKey(r._id.contentType, r._id.contentId));
+  const removed = await ItemPopularity.deleteMany({ itemKey: { $nin: liveKeys } });
+  if (removed.deletedCount) console.log(`  pruned ${removed.deletedCount} stale popularity rows`);
+
   if (!rows.length) return { items: 0, users: userCount };
 
   const ops = rows.map((r) => {
