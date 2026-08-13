@@ -3,6 +3,7 @@ import { Router } from 'express';
 import * as activity from '../controllers/activityController';
 import * as ai from '../controllers/aiController';
 import * as catalog from '../controllers/catalogController';
+import * as feedCtl from '../controllers/feedController';
 import * as messages from '../controllers/messageController';
 import * as notifications from '../controllers/notificationController';
 import * as ratings from '../controllers/ratingController';
@@ -109,6 +110,13 @@ router.put('/notifications/:id/read', requireAuth, notifications.readOne);
 
 router.post('/follow-requests/:id/accept', requireAuth, notifications.acceptRequest);
 router.post('/follow-requests/:id/decline', requireAuth, notifications.declineRequest);
+
+/* ---------------------------------- feed ---------------------------------- */
+
+router.get('/feed', requireAuth, feedCtl.feed);
+router.get('/feed/seed', requireAuth, feedCtl.seedGrid);
+router.post('/feed/seed', requireAuth, feedCtl.submitSeed);
+router.post('/feed/dismiss', requireAuth, feedCtl.dismiss);
 
 /* -------------------------------- activity -------------------------------- */
 
