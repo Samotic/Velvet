@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
     "verify": "tsx scripts/verify-auth.ts",
     "verify:api": "tsx scripts/verify-api.ts"
   },
@@ -22,6 +23,7 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
+    "resend": "^6.18.1",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
