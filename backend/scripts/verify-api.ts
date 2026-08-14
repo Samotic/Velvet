@@ -193,7 +193,9 @@ async function run() {
   const selfFollow = await api()
     .post(`/api/users/${adaId}/follow`)
     .set('Authorization', `Bearer ${ada}`);
-  check('cannot follow yourself', selfFollow.status === 422, `got ${selfFollow.status}`);
+  // 400, not 422: the controller treats a self-follow as a malformed request
+  // rather than a well-formed one it declined.
+  check('cannot follow yourself', selfFollow.status === 400, `got ${selfFollow.status}`);
 
   const followersList = await api()
     .get(`/api/users/${adaId}/followers`)
@@ -322,6 +324,11 @@ async function run() {
 
   section('Messaging');
 
+  // Messaging requires a mutual follow. Only lin → ada exists above, so ada
+  // follows back here rather than in the follows section, where an extra edge
+  // would move the counts those checks assert on.
+  await api().post(`/api/users/${linId}/follow`).set('Authorization', `Bearer ${ada}`);
+
   const sent = await api()
     .post(`/api/messages/${linId}/send`)
     .set('Authorization', `Bearer ${ada}`)
@@ -360,9 +367,11 @@ async function run() {
 
   const notifs = await api().get('/api/notifications').set('Authorization', `Bearer ${ada}`);
   check('notifications were generated', (notifs.body?.data?.notifications?.length ?? 0) > 0);
+  // 'follow' is deprecated — a public target now yields 'new_follower' and a
+  // private one 'follow_request'. Ada is public, so it is the former.
   check(
     'a follow notification exists',
-    notifs.body?.data?.notifications?.some((n: { type: string }) => n.type === 'follow'),
+    notifs.body?.data?.notifications?.some((n: { type: string }) => n.type === 'new_follower'),
   );
   check('notifications carry an unread total', typeof notifs.body?.data?.unread === 'number');
 

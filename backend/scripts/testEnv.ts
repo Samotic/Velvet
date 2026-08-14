@@ -20,6 +20,13 @@
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'verify_script_secret';
 
+// mongodb-memory-server starts a bare `mongod`, not a replica set, so every
+// transaction it is handed throws "Transaction numbers are only allowed on a
+// replica set member or mongos". `supportsTransactions` defaults on for Atlas,
+// which means the verify run must opt out explicitly or the whole follow graph
+// 500s and takes notifications, the activity feed and messaging down with it.
+process.env.SUPPORTS_TRANSACTIONS = 'false';
+
 process.env.RESEND_API_KEY = '';
 process.env.GOOGLE_CLIENT_ID = '';
 process.env.GOOGLE_CLIENT_SECRET = '';
