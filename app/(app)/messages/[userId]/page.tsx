@@ -1,6 +1,7 @@
 'use client';
 
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
+import { VerifyGate } from '@/components/auth/VerifyGate';
 import { Inbox } from '@/components/messages/Inbox';
 import { Thread } from '@/components/messages/Thread';
 
@@ -13,10 +14,12 @@ import { Thread } from '@/components/messages/Thread';
 export default function ConversationPage({ params }: { params: { userId: string } }) {
   return (
     <ProtectedRoute>
-      <div className="msg-shell on-thread">
-        <Inbox activeUserId={params.userId} />
-        <Thread userId={params.userId} />
-      </div>
+      <VerifyGate feature="messages">
+        <div className="msg-shell on-thread">
+          <Inbox activeUserId={params.userId} />
+          <Thread userId={params.userId} />
+        </div>
+      </VerifyGate>
     </ProtectedRoute>
   );
 }

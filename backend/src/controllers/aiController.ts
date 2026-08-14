@@ -30,7 +30,7 @@ const HISTORY_TURNS = 10;
 
 interface QuotaState {
   allowed: boolean;
-  /** Remaining free messages after this one; null when Pro (unlimited). */
+  /** Remaining messages after this one; null when uncapped. */
   remaining: number | null;
 }
 
@@ -45,6 +45,8 @@ async function consumeQuota(userId: string): Promise<QuotaState> {
   const user = await User.findById(userId).select('isPro aiMessagesUsedToday aiMessagesResetAt');
   if (!user) return { allowed: false, remaining: 0 };
 
+  // `isPro` is no longer purchasable — it is a flag set by hand on the account
+  // to lift the cap for the operator or a trusted user.
   if (user.isPro) return { allowed: true, remaining: null };
 
   const today = new Date().toISOString().slice(0, 10);
@@ -144,7 +146,7 @@ export async function chat(req: Request, res: Response): Promise<Response> {
     if (!quota.allowed) {
       return fail(
         res,
-        `You've used your ${env.aiFreeDailyMessages} free messages for today. Velvet Pro is unlimited.`,
+        `That's your ${env.aiFreeDailyMessages} advisor messages for today — the count resets tomorrow.`,
         429,
       );
     }

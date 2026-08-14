@@ -7,9 +7,10 @@ import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 import { useToast } from '@/components/Toast';
 import { useRipple } from '@/components/ui/Ripple';
 import { useAuth } from '@/components/auth/AuthProvider';
+import { prefetchDetail } from '@/lib/catalog';
 import { formatScore } from '@/lib/format';
 import { hrefFor, TYPE_LABEL, type CatalogSummary } from '@/lib/contentTypes';
-import { getMyRating, onLibraryChange, toggleWatchlist } from '@/lib/ratings';
+import { myRatingOf, onLibraryChange, toggleWatchlist } from '@/lib/ratings';
 
 import { Bookmark, BookmarkFilled, StarFilled } from './icons';
 
@@ -18,7 +19,7 @@ import { Bookmark, BookmarkFilled, StarFilled } from './icons';
  *
  * Carries everything the design asks of it: the score badge, the type tag, the
  * hover lift, the shine sweep (CSS), the AI tip that slides up, and a save
- * button that ripples copper and toggles the watchlist.
+ * button that ripples indigo and toggles the watchlist.
  *
  * `savedInitial` lets a parent that already knows the watchlist state (the
  * watchlist screen itself) skip the per-card lookup.
@@ -46,14 +47,15 @@ export function PosterCard({
   const [busy, setBusy] = useState(false);
 
   // Reflect the user's own rating on the poster, and keep it live if they rate
-  // this title on another screen.
+  // this title on another screen. `myRatingOf` batches every card in the grid
+  // into one request, so a rail of twenty costs one call rather than twenty.
   const sync = useCallback(() => {
     if (!isAuthenticated) {
       setMine(null);
       return;
     }
-    void getMyRating(item.id, item.type)
-      .then((r) => setMine(r?.rating ?? null))
+    void myRatingOf(item.id, item.type)
+      .then(setMine)
       .catch(() => setMine(null));
   }, [isAuthenticated, item.id, item.type]);
 
@@ -93,8 +95,19 @@ export function PosterCard({
     }
   }
 
+  // Start the title's fetch while the cursor is still on its way. Next's Link
+  // already prefetches the route's code; this prefetches its data, which is the
+  // half that actually costs a round trip to TMDB or IGDB.
+  const warm = useCallback(() => prefetchDetail(item.type, item.id), [item.type, item.id]);
+
   return (
-    <Link href={hrefFor(item.type, item.id)} className="poster-card">
+    <Link
+      href={hrefFor(item.type, item.id)}
+      className="poster-card"
+      onMouseEnter={warm}
+      onFocus={warm}
+      onTouchStart={warm}
+    >
       <div className="poster-shell">
         {item.posterUrl ? (
           <Image

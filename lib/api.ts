@@ -11,7 +11,16 @@
  *
  * The token lives in localStorage per the spec. That's readable by JS (an XSS
  * trade-off vs. httpOnly cookies) — documented here so it's a known choice.
+ *
+ * `setToken`/`clearToken` also mirror the session into a cookie, because the
+ * middleware gate runs on the server and cannot read localStorage. That mirror
+ * is for *routing only* — see lib/sessionCookie.ts. Writing it here rather than
+ * at the call sites is deliberate: every path that starts or ends a session
+ * already goes through these two functions, so the cookie cannot fall out of
+ * step with the token.
  */
+
+import { clearSessionCookies, writeSessionCookie } from './sessionCookie';
 
 const BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000').replace(/\/$/, '');
 
@@ -43,6 +52,9 @@ export function getToken(): string | null {
 
 export function setToken(token: string): void {
   if (typeof window === 'undefined') return;
+  // The cookie first: in private mode localStorage can throw, and a session the
+  // gate can see is more useful than one only the API calls can see.
+  writeSessionCookie(token);
   try {
     window.localStorage.setItem(TOKEN_KEY, token);
   } catch {
@@ -52,6 +64,7 @@ export function setToken(token: string): void {
 
 export function clearToken(): void {
   if (typeof window === 'undefined') return;
+  clearSessionCookies();
   try {
     window.localStorage.removeItem(TOKEN_KEY);
   } catch {

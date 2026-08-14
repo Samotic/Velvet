@@ -90,7 +90,7 @@ export function FriendsActivity() {
           action={
             isAuthenticated
               ? { label: 'Find people', href: '/search?mode=people' }
-              : { label: 'Sign in', href: '/login' }
+              : { label: 'Sign in', href: '/signin' }
           }
         />
       </>

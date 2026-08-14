@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Barlow_Condensed, DM_Serif_Display, Inter } from 'next/font/google';
 
-import { AppShell } from '@/components/AppShell';
 import { AuthProvider } from '@/components/auth/AuthProvider';
 import { ToastProvider } from '@/components/Toast';
 
@@ -46,17 +45,22 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#0c0a08',
+  themeColor: '#07071a',
 };
 
+/**
+ * Root layout: fonts, theme and providers only.
+ *
+ * The nav deliberately does **not** live here — it belongs to `(app)/layout.tsx`.
+ * Keeping it out is what makes the auth screens genuinely full-bleed: a sign-in
+ * page with a navigation bar above it is not a sign-in page.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${dmSerif.variable} ${barlow.variable}`}>
       <body>
         <AuthProvider>
-          <ToastProvider>
-            <AppShell>{children}</AppShell>
-          </ToastProvider>
+          <ToastProvider>{children}</ToastProvider>
         </AuthProvider>
       </body>
     </html>

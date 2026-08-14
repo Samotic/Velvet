@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
- * Toasts: bottom right, dark card, copper dot.
+ * Toasts: bottom right, dark card, indigo dot.
  *
  * A stack rather than a single slot — saving three titles in quick succession
  * should show three confirmations, not one that keeps resetting its timer.

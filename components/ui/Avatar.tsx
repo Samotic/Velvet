@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { initial } from '@/lib/format';
 
 /**
- * A user's avatar, falling back to their initial on the copper gradient.
+ * A user's avatar, falling back to their initial on the indigo gradient.
  *
  * Sizes are named rather than numeric so they stay pinned to the CSS classes —
  * a one-off pixel value would drift from the design system the first time

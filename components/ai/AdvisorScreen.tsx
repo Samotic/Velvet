@@ -94,9 +94,8 @@ function Advisor() {
         setMessages((prev) => prev.filter((m) => m.id !== provisional.id));
         setDraft(body);
 
-        if (err instanceof ApiError && err.status === 429) {
-          toast.bad("You're out of free messages today — Velvet Pro is unlimited.");
-        } else if (err instanceof ApiError && err.status === 503) {
+        // A 429 is the daily cap; the server's own message explains it.
+        if (err instanceof ApiError && err.status === 503) {
           toast.bad('The advisor is not configured yet.');
         } else {
           toast.bad(err instanceof ApiError ? err.message : 'The advisor could not reply');
@@ -291,18 +290,11 @@ function Advisor() {
           </div>
 
           <p className="composer-note">
-            {isPro ? (
-              'Velvet Pro · unlimited messages'
-            ) : remaining !== null ? (
-              <>
-                {remaining} free {remaining === 1 ? 'message' : 'messages'} left today ·{' '}
-                <Link href="/pro">Go unlimited</Link>
-              </>
-            ) : (
-              <>
-                Free tier: 10 messages a day · <Link href="/pro">Go unlimited</Link>
-              </>
-            )}
+            {isPro
+              ? 'Unlimited messages'
+              : remaining !== null
+                ? `${remaining} ${remaining === 1 ? 'message' : 'messages'} left today`
+                : '10 messages a day · resets each morning'}
           </p>
         </div>
       </div>

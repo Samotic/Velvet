@@ -3,6 +3,7 @@
 import Link from 'next/link';
 
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
+import { VerifyGate } from '@/components/auth/VerifyGate';
 import { Inbox } from '@/components/messages/Inbox';
 import { ChatBubbles } from '@/components/icons';
 
@@ -15,24 +16,26 @@ import { ChatBubbles } from '@/components/icons';
 export default function MessagesPage() {
   return (
     <ProtectedRoute>
-      <div className="msg-shell">
-        <Inbox />
+      <VerifyGate feature="messages">
+        <div className="msg-shell">
+          <Inbox />
 
-        <div className="msg-thread">
-          <div className="empty" style={{ margin: 'auto' }}>
-            <div className="empty-art">
-              <ChatBubbles />
+          <div className="msg-thread">
+            <div className="empty" style={{ margin: 'auto' }}>
+              <div className="empty-art">
+                <ChatBubbles />
+              </div>
+              <div className="empty-title">Start a conversation</div>
+              <div className="empty-text">
+                Pick someone from the list, or find people whose taste you trust.
+              </div>
+              <Link href="/search?mode=people" className="btn-fill">
+                Find people
+              </Link>
             </div>
-            <div className="empty-title">Start a conversation</div>
-            <div className="empty-text">
-              Pick someone from the list, or find people whose taste you trust.
-            </div>
-            <Link href="/search?mode=people" className="btn-fill">
-              Find people
-            </Link>
           </div>
         </div>
-      </div>
+      </VerifyGate>
     </ProtectedRoute>
   );
 }

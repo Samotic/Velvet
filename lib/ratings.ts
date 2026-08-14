@@ -1,6 +1,6 @@
 'use client';
 
-import { api } from './api';
+import { api, UNAUTHORIZED_EVENT } from './api';
 import type {
   ContentType,
   RatingSummary,
@@ -28,6 +28,9 @@ export const LIBRARY_CHANGED = 'velvet:library-changed';
 
 function announce() {
   if (typeof window !== 'undefined') {
+    // Order matters: drop the memoised scores before the listeners re-read,
+    // or they'd be served the values the write just invalidated.
+    clearRatingCache();
     window.dispatchEvent(new Event(LIBRARY_CHANGED));
   }
 }
@@ -76,6 +79,95 @@ export async function getMyRating(
     `/api/ratings/content/${contentType}/${encodeURIComponent(contentId)}/me`,
   );
   return rating;
+}
+
+/* ----------------------- batched own-rating lookups ----------------------- */
+
+/**
+ * `getMyRating` per card meant one request per poster: a home grid fired
+ * twenty, a rating write re-fired all twenty, and the browser's six-connection
+ * cap turned them into a queue the user could watch drain.
+ *
+ * `myRatingOf` instead collects every card that asks within the same tick —
+ * which is all of them, since React mounts a grid in one commit — and answers
+ * the lot with a single POST. Results are memoised until the next write, so
+ * scrolling back to a rail already seen costs nothing.
+ */
+
+const key = (contentId: string, contentType: ContentType) => `${contentType}:${contentId}`;
+
+/** Resolved scores, held until a write invalidates them. */
+const scoreCache = new Map<string, number | null>();
+
+type Waiter = { resolve: (v: number | null) => void };
+type PendingEntry = { contentId: string; contentType: ContentType; waiters: Waiter[] };
+
+let pending = new Map<string, PendingEntry>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function flush(): Promise<void> {
+  flushTimer = null;
+  const batch = pending;
+  pending = new Map();
+  if (batch.size === 0) return;
+
+  const entries = Array.from(batch.values());
+  // The server caps a batch at 100; chunk so a very long grid still resolves.
+  const chunks: PendingEntry[][] = [];
+  for (let i = 0; i < entries.length; i += 100) chunks.push(entries.slice(i, i + 100));
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      try {
+        const { ratings } = await api.post<{ ratings: Record<string, number> }>(
+          '/api/ratings/content/mine',
+          { items: chunk.map(({ contentId, contentType }) => ({ contentId, contentType })) },
+        );
+        for (const entry of chunk) {
+          const k = key(entry.contentId, entry.contentType);
+          const score = ratings[k] ?? null;
+          scoreCache.set(k, score);
+          entry.waiters.forEach((w) => w.resolve(score));
+        }
+      } catch {
+        // A failed badge lookup is not worth surfacing — the card just shows
+        // no personal score, exactly as it does for an unrated title.
+        for (const entry of chunk) entry.waiters.forEach((w) => w.resolve(null));
+      }
+    }),
+  );
+}
+
+/**
+ * The signed-in user's own score for one title, batched across callers and
+ * cached until the next write. Returns null when unrated.
+ */
+export function myRatingOf(contentId: string, contentType: ContentType): Promise<number | null> {
+  const k = key(contentId, contentType);
+  if (scoreCache.has(k)) return Promise.resolve(scoreCache.get(k) ?? null);
+
+  return new Promise((resolve) => {
+    const existing = pending.get(k);
+    if (existing) {
+      existing.waiters.push({ resolve });
+    } else {
+      pending.set(k, { contentId, contentType, waiters: [{ resolve }] });
+    }
+    // setTimeout(0), not a microtask: it lands after React has committed the
+    // whole grid, so one batch covers every card rather than just the first.
+    if (flushTimer === null) flushTimer = setTimeout(() => void flush(), 0);
+  });
+}
+
+/** Drops the memoised scores. Called on every write, and on sign-out. */
+export function clearRatingCache(): void {
+  scoreCache.clear();
+}
+
+// A cached score belongs to whoever was signed in when it was read. Session
+// teardown must drop it, or the next account inherits the last one's stars.
+if (typeof window !== 'undefined') {
+  window.addEventListener(UNAUTHORIZED_EVENT, clearRatingCache);
 }
 
 /** Community score, count and star distribution for a title. */

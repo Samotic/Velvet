@@ -3,7 +3,7 @@
 import { useCallback, type MouseEvent } from 'react';
 
 /**
- * The copper ripple every button in the design carries.
+ * The indigo ripple every button in the design carries.
  *
  * Implemented as a hook rather than a wrapper component so it can be attached
  * to whatever element already exists — a `.btn-fill`, a `.chip`, a poster's

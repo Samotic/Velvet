@@ -47,7 +47,8 @@ async function main() {
         status('IGDB', configured.igdb()),
         status('Claude', configured.ai()),
         status('Cloudinary', configured.cloudinary()),
-        status('Stripe', configured.stripe()),
+        status('Google', configured.google()),
+        status('Email', configured.email()),
       ].join('   ')}`,
     );
   });

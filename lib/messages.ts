@@ -12,12 +12,17 @@ export function getConversations(signal?: AbortSignal): Promise<Conversation[]> 
     .then((r) => r.conversations);
 }
 
-/** One thread's messages, oldest first, plus who the other person is. */
+/**
+ * One thread's messages, oldest first, plus who the other person is.
+ *
+ * `canMessage` is the mutual-follow verdict, computed server-side. History is
+ * always returned — losing the follow closes the composer, not the thread.
+ */
 export function getThread(
   userId: string,
   signal?: AbortSignal,
-): Promise<{ messages: DirectMessage[]; user: PublicProfile }> {
-  return api.get<{ messages: DirectMessage[]; user: PublicProfile }>(
+): Promise<{ messages: DirectMessage[]; user: PublicProfile; canMessage: boolean }> {
+  return api.get<{ messages: DirectMessage[]; user: PublicProfile; canMessage: boolean }>(
     `/api/messages/${userId}`,
     { signal },
   );

@@ -36,6 +36,9 @@ export function Thread({ userId }: { userId: string }) {
   const [theyType, setTheyType] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [following, setFollowing] = useState(false);
+  // Starts open so the composer doesn't flash shut for the ordinary case; the
+  // server's verdict lands a moment later, and the server is what enforces it.
+  const [canMessage, setCanMessage] = useState(true);
 
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -49,10 +52,11 @@ export function Thread({ userId }: { userId: string }) {
     setMessages(null);
 
     getThread(userId, controller.signal)
-      .then(({ messages: list, user }) => {
+      .then(({ messages: list, user, canMessage: allowed }) => {
         setMessages(list);
         setOther(user);
         setFollowing(user.isFollowing);
+        setCanMessage(allowed);
         // Opening the thread is what marks it read.
         void markThreadRead(userId).catch(() => {});
       })
@@ -246,6 +250,15 @@ export function Thread({ userId }: { userId: string }) {
         )}
       </div>
 
+      {!canMessage ? (
+        /* History above stays readable — only the ability to add to it stops. */
+        <div className="composer">
+          <p className="composer-locked">
+            You and {other?.displayName ?? 'this person'} need to follow each other before you
+            can message.
+          </p>
+        </div>
+      ) : (
       <div className="composer">
         <div className="composer-row" style={{ position: 'relative' }}>
           <div style={{ position: 'relative' }}>
@@ -304,6 +317,7 @@ export function Thread({ userId }: { userId: string }) {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }

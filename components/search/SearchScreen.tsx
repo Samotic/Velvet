@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { PosterCard } from '@/components/PosterCard';
 import { useAuth } from '@/components/auth/AuthProvider';
@@ -327,10 +327,21 @@ function PeopleResults({ term, people }: { term: string; people: PublicProfile[]
     return <EmptyState icon="◈" title="Nobody found" text={`No Velvet user matches “${term}”.`} />;
   }
 
+  // The API already ranks handle matches above name-only matches. The boundary
+  // is recomputed here rather than widening the response shape just to carry a
+  // divider — the same term that produced the list can locate it.
+  const needle = term.trim().toLowerCase();
+  const handleCount = people.filter((u) => u.username.toLowerCase().startsWith(needle)).length;
+  const showDivider = handleCount > 0 && handleCount < people.length;
+
   return (
     <div style={{ marginTop: 18 }}>
-      {people.map((u) => (
-        <div key={u.id} className="user-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+      {people.map((u, i) => (
+        <Fragment key={u.id}>
+        {showDivider && i === handleCount && (
+          <div className="people-divider">also matching name</div>
+        )}
+        <div className="user-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
           <Avatar
             src={u.profilePhoto}
             name={u.displayName}
@@ -354,6 +365,7 @@ function PeopleResults({ term, people }: { term: string; people: PublicProfile[]
             </button>
           )}
         </div>
+        </Fragment>
       ))}
     </div>
   );

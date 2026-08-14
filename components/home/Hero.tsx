@@ -13,7 +13,7 @@ import { HeroActions } from './HeroActions';
  * The featured title, with the floating three-poster cluster beside it.
  *
  * The title splits two-tone — first word upright in the off-white, the rest in
- * the copper DM Serif italic. That gesture is the brand's signature; it also
+ * the indigo DM Serif italic. That gesture is the brand's signature; it also
  * appears on every detail hero.
  */
 export function Hero({

@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
  * watchlist and an empty search should feel like the same product.
  */
 
-/** Friendly message + a copper CTA, per the design rules. */
+/** Friendly message + a indigo CTA, per the design rules. */
 export function EmptyState({
   icon,
   art,
@@ -72,6 +72,52 @@ export function Loading({ label = 'Loading' }: { label?: string }) {
   return (
     <div className="empty" style={{ padding: '72px 24px' }}>
       <div className="auth-gate-spinner" aria-label={label} />
+    </div>
+  );
+}
+
+/**
+ * The detail hero, drawn empty.
+ *
+ * A title page's data is two hops away (our API, then TMDB/IGDB), so a spinner
+ * would leave the screen blank for the whole round trip. This paints the real
+ * hero — the indigo backdrop wash, the poster well, the title block — at the
+ * exact dimensions the loaded page uses, so the design arrives on click and
+ * only the text fills in afterwards. Nothing moves when it does.
+ */
+export function DetailSkeleton() {
+  return (
+    <section className="detail-hero" aria-busy="true" aria-label="Loading title">
+      <div className="detail-backdrop plain" />
+      <div className="detail-hero-inner">
+        <div className="detail-poster">
+          <div className="skeleton" style={{ position: 'absolute', inset: 0 }} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="badges">
+            <span className="skeleton" style={{ width: 74, height: 24, borderRadius: 100 }} />
+            <span className="skeleton" style={{ width: 58, height: 24, borderRadius: 100 }} />
+          </div>
+          <div className="skeleton" style={{ height: 52, width: '62%', marginTop: 18 }} />
+          <div className="skeleton" style={{ height: 52, width: '44%', marginTop: 10 }} />
+          <div className="skeleton" style={{ height: 14, width: '32%', marginTop: 22 }} />
+          <div className="skeleton" style={{ height: 44, width: 260, marginTop: 26, borderRadius: 6 }} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * A whole discovery screen, drawn empty: hero band, then a poster rail.
+ * Used by the route-level `loading.tsx` files so a navigation paints the
+ * page's shape before its client bundle has even run.
+ */
+export function ScreenSkeleton({ rail = 12 }: { rail?: number }) {
+  return (
+    <div aria-busy="true">
+      <div className="skeleton" style={{ height: 300, borderRadius: 8, marginBottom: 34 }} />
+      <PosterGridSkeleton count={rail} />
     </div>
   );
 }

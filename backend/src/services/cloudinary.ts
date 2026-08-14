@@ -35,12 +35,25 @@ function configure() {
 /** Data URLs only, and only the formats a browser will actually produce. */
 const DATA_URL_RE = /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/;
 
-/** ~8MB of base64 ≈ 6MB of image. Rejected before we spend a round trip. */
-const MAX_BASE64_LENGTH = 8 * 1024 * 1024;
+/**
+ * 5MB of actual image, enforced server-side.
+ *
+ * base64 inflates by 4/3, so the ceiling is expressed on the decoded size and
+ * converted — writing the encoded number directly is how a "5MB limit" quietly
+ * becomes 3.75MB. The client checks too, but that check is a courtesy: this one
+ * is the limit, because the client is not trustworthy.
+ */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_BASE64_LENGTH = Math.ceil((MAX_IMAGE_BYTES * 4) / 3);
 
 export function isValidImageDataUrl(v: unknown): v is string {
+  // Type check first: DATA_URL_RE also pins the MIME type to real image formats,
+  // so a `data:text/html` payload never reaches Cloudinary.
   return typeof v === 'string' && v.length <= MAX_BASE64_LENGTH && DATA_URL_RE.test(v);
 }
+
+/** Deterministic — one asset per user. Lets a replacement overwrite in place. */
+export const avatarPublicId = (userId: string) => `velvet/avatars/${userId}`;
 
 /** Uploads a data URL and returns the secure CDN url. */
 export async function uploadProfilePhoto(dataUrl: string, userId: string): Promise<string> {

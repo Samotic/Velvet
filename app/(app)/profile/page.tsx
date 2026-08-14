@@ -20,7 +20,7 @@ export default function OwnProfileRedirect() {
 
   useEffect(() => {
     if (isLoading) return;
-    router.replace(user ? `/profile/${user.username}` : '/login');
+    router.replace(user ? `/profile/${user.username}` : '/signin');
   }, [isLoading, user, router]);
 
   return <Loading label="Opening your profile" />;

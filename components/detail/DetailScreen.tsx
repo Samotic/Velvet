@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { PosterCard } from '@/components/PosterCard';
 import { Reveal } from '@/components/ui/Reveal';
-import { Loading } from '@/components/ui/States';
+import { DetailSkeleton } from '@/components/ui/States';
 import { StarFilled } from '@/components/icons';
 import { ApiError } from '@/lib/api';
 import { getDetail } from '@/lib/catalog';
@@ -51,7 +51,9 @@ export function DetailScreen({ type, id }: { type: ContentType; id: string }) {
   const bumpCommunity = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   if (missing) notFound();
-  if (!item) return <Loading />;
+  // Same shape the route's loading.tsx drew, so the handoff from route
+  // skeleton to screen skeleton is invisible — no flash, no reflow.
+  if (!item) return <DetailSkeleton />;
 
   const { lead, accent } = splitTitle(item.title);
   const overviewLong = item.overview.length > 340;

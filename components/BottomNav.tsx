@@ -7,7 +7,7 @@ import { useAuth } from './auth/AuthProvider';
 import { isActive, MOBILE_NAV } from './navItems';
 
 /** Full-bleed screens where a floating bar would break the illusion. */
-const HIDDEN_ON = ['/login', '/register', '/onboarding'];
+const HIDDEN_ON = ['/signin', '/signup', '/onboarding'];
 
 /**
  * Mobile navigation. Fixed to the bottom below the `md` breakpoint; hidden by

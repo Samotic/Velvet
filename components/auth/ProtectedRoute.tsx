@@ -8,7 +8,7 @@ import { useAuth } from './AuthProvider';
 /**
  * Gates its children behind authentication. While the session is being
  * restored it shows a Velvet-styled loading state; once resolved, unauthenticated
- * visitors are redirected to /login.
+ * visitors are redirected to /signin.
  *
  * Wrap any protected page's content in this:
  *   export default function Page() { return <ProtectedRoute><Body/></ProtectedRoute>; }
@@ -19,7 +19,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace('/login');
+      router.replace('/signin');
     }
   }, [isLoading, isAuthenticated, router]);
 

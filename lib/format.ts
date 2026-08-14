@@ -10,7 +10,7 @@ export const formatScore = (score: number): string => score.toFixed(1);
 
 /**
  * The design's signature title treatment: the first word upright in the light
- * cream, the remainder in the copper italic ("The" / *Brutalist*).
+ * display tone, the remainder in the indigo italic ("The" / *Brutalist*).
  *
  * A single-word title goes wholly to the italic rather than losing the
  * two-tone gesture entirely.

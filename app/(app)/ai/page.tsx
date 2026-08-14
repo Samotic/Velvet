@@ -1,5 +1,6 @@
 import { Suspense } from 'react';
 
+import { VerifyGate } from '@/components/auth/VerifyGate';
 import { AdvisorScreen } from '@/components/ai/AdvisorScreen';
 
 export const metadata = {
@@ -16,7 +17,9 @@ export const metadata = {
 export default function AiPage() {
   return (
     <Suspense fallback={null}>
-      <AdvisorScreen />
+      <VerifyGate feature="the advisor">
+        <AdvisorScreen />
+      </VerifyGate>
     </Suspense>
   );
 }

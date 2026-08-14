@@ -20,6 +20,8 @@ import type {
   ProfileUpdateInput,
   RegisterInput,
 } from '@/lib/authTypes';
+import { clearRatingCache } from '@/lib/ratings';
+import { writeOnboardedCookie } from '@/lib/sessionCookie';
 import { closeSocket } from '@/lib/socket';
 
 interface AuthState {
@@ -41,6 +43,23 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+/** profile → avatar → taste. Mirrors TOTAL_STEPS in middleware.ts. */
+const TOTAL_ONBOARDING_STEPS = 3;
+
+/**
+ * The onboarding step to advertise to the middleware gate.
+ *
+ * `||` rather than `??` deliberately. A user document written before
+ * `onboardingStep` existed reads back as **0**, not undefined — Mongoose applies
+ * the schema default on load. With `??` that 0 would be taken at face value and
+ * every pre-existing account, however long onboarded, would be dragged back to
+ * step 1 on its next sign-in. Falling through to `onboardingCompleted` treats
+ * those accounts as fully done, which they are.
+ */
+function stepFor(user: AuthUser): number {
+  return user.onboardingStep || (user.onboardingCompleted ? TOTAL_ONBOARDING_STEPS : 0);
+}
+
 export function useAuth(): AuthState {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
@@ -48,7 +67,7 @@ export function useAuth(): AuthState {
 }
 
 /** Routes a half-set-up account is allowed to sit on without being redirected. */
-const ONBOARDING_EXEMPT = ['/onboarding', '/login', '/register'];
+const ONBOARDING_EXEMPT = ['/onboarding', '/signin', '/signup'];
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -56,10 +75,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUserState] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  /**
+   * The only way the user object should be set.
+   *
+   * Writes the routing cookie **synchronously**, before React commits, because
+   * every caller navigates immediately afterwards. Left to the effect below, the
+   * `router.replace` in the sign-in form would run first, middleware would read
+   * a cookie that isn't there yet, conclude the account has done nothing, and
+   * redirect a perfectly onboarded user into /onboarding/profile.
+   */
+  const applyUser = useCallback((next: AuthUser) => {
+    writeOnboardedCookie(stepFor(next));
+    setUserState(next);
+  }, []);
+
+  /** As above, plus the token — used by the two calls that start a session. */
+  const applySession = useCallback(
+    (token: string, next: AuthUser) => {
+      setToken(token);
+      applyUser(next);
+    },
+    [applyUser],
+  );
+
   const checkAuth = useCallback(async () => {
     // No stored token → definitely logged out. Skip the API call entirely:
     // hitting /me here would 401, and the global 401 handler would redirect
-    // public pages (home, search, detail) to /login for anonymous visitors.
+    // the still-public pages (search, detail, profiles) to /signin for anonymous
+    // visitors. Home is gated deliberately — see app/page.tsx.
     if (!getToken()) {
       setUserState(null);
       setIsLoading(false);
@@ -68,18 +111,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       const { user: current } = await api.get<{ user: AuthUser }>('/api/auth/me');
-      setUserState(current);
+      applyUser(current);
     } catch {
       // Token was present but invalid/expired — api.ts already cleared it.
       setUserState(null);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [applyUser]);
 
   useEffect(() => {
     void checkAuth();
   }, [checkAuth]);
+
+  /**
+   * Belt to `applyUser`'s braces: catches any state change that did not go
+   * through it. Effects run *after* the commit, so this alone is not enough —
+   * see the note on `applyUser`.
+   */
+  useEffect(() => {
+    if (user) writeOnboardedCookie(stepFor(user));
+  }, [user]);
 
   const logout = useCallback(async () => {
     // Tell the server first so it can clear any server-side session state, but
@@ -92,8 +144,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     clearToken();
     closeSocket();
+    // Memoised star badges are this user's; the next one must not inherit them.
+    clearRatingCache();
     setUserState(null);
-    router.replace('/login');
+    router.replace('/signin');
   }, [router]);
 
   // Global 401 (expired/tampered token mid-session) → log out everywhere.
@@ -105,7 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearToken();
       closeSocket();
       setUserState(null);
-      router.replace('/login');
+      router.replace('/signin');
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
@@ -123,38 +177,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     router.replace('/onboarding');
   }, [isLoading, user, pathname, router]);
 
+  // NOTE: `/api/auth/login` and `/api/auth/register` are **API endpoints**, not
+  // page routes. The pages moved to /signin and /signup; these did not.
   const login = useCallback(async (input: LoginInput) => {
     const { token, user: current } = await api.post<AuthPayload>('/api/auth/login', input, {
       auth: false,
     });
-    setToken(token);
-    setUserState(current);
+    applySession(token, current);
     return current;
-  }, []);
+  }, [applySession]);
 
   const register = useCallback(async (input: RegisterInput) => {
     const { token, user: current } = await api.post<AuthPayload>('/api/auth/register', input, {
       auth: false,
     });
-    setToken(token);
-    setUserState(current);
+    applySession(token, current);
     return current;
-  }, []);
+  }, [applySession]);
 
   const completeOnboarding = useCallback(async (input: OnboardingInput) => {
     const { user: current } = await api.post<{ user: AuthUser }>(
       '/api/auth/complete-onboarding',
       input,
     );
-    setUserState(current);
+    applyUser(current);
     return current;
-  }, []);
+  }, [applyUser]);
 
   const updateProfile = useCallback(async (input: ProfileUpdateInput) => {
     const { user: current } = await api.put<{ user: AuthUser }>('/api/users/me', input);
-    setUserState(current);
+    applyUser(current);
     return current;
-  }, []);
+  }, [applyUser]);
 
   const value = useMemo<AuthState>(
     () => ({
@@ -166,10 +220,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout,
       completeOnboarding,
       updateProfile,
-      setUser: setUserState,
+      setUser: applyUser,
       checkAuth,
     }),
-    [user, isLoading, login, register, logout, completeOnboarding, updateProfile, checkAuth],
+    [
+      user,
+      isLoading,
+      login,
+      register,
+      logout,
+      completeOnboarding,
+      updateProfile,
+      applyUser,
+      checkAuth,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

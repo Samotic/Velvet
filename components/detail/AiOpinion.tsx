@@ -34,9 +34,8 @@ export function AiOpinion({ item }: { item: CatalogDetail }) {
       );
       setAnswer(res.message.content);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 429) {
-        setError("You're out of free messages today. Velvet Pro is unlimited.");
-      } else if (err instanceof ApiError && err.status === 503) {
+      // A 429 is the daily cap; the server's own message explains it.
+      if (err instanceof ApiError && err.status === 503) {
         setError('The advisor is not configured on this server yet.');
       } else {
         setError(err instanceof ApiError ? err.message : 'The advisor could not answer.');
@@ -64,7 +63,7 @@ export function AiOpinion({ item }: { item: CatalogDetail }) {
             </RippleButton>
           )
         ) : (
-          <Link href="/login" className="btn-secondary">
+          <Link href="/signin" className="btn-secondary">
             Sign in
           </Link>
         )}
@@ -72,12 +71,7 @@ export function AiOpinion({ item }: { item: CatalogDetail }) {
 
       {error && (
         <div className="ai-answer" style={{ color: 'var(--bad)' }}>
-          {error}{' '}
-          {error.includes('Pro') && (
-            <Link href="/pro" style={{ color: 'var(--accent-bright)' }}>
-              See Velvet Pro
-            </Link>
-          )}
+          {error}
         </div>
       )}
 

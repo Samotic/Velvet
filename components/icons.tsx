@@ -2,7 +2,7 @@
  * The Velvet icon set.
  *
  * All line icons share one 24×24 grid and a 2px stroke, and inherit
- * `currentColor` so the copper comes from whatever context they sit in — a
+ * `currentColor` so the indigo comes from whatever context they sit in — a
  * `.nav-link.active`, a `.score`, a `.btn-primary`. Solid icons declare
  * `fill="currentColor"` for the same reason.
  */
@@ -179,7 +179,7 @@ export const PlayFilled = ({ size = 18, className }: SizedProps) => (
   </svg>
 );
 
-/** Inherits its colour, so the copper comes from the surrounding context. */
+/** Inherits its colour, so the indigo comes from the surrounding context. */
 export const StarFilled = ({ size = 15, className }: SizedProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
     <path d="M12 2l3 6.5 7 .9-5 4.8 1.3 7L12 18l-6.6 3.2L6.7 14l-5-4.8 7-.9z" />
@@ -206,7 +206,7 @@ export const HeartFilled = ({ size = 16, className }: SizedProps) => (
   </svg>
 );
 
-/** Velvet Pro. */
+/** Marks an account whose advisor cap has been lifted by hand. */
 export const Crown = ({ size = 14, className }: SizedProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
     <path d="M3 18h18l-1.6-9-4.4 3.6L12 6l-3 6.6L4.6 9z" />

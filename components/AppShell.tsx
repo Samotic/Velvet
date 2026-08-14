@@ -3,16 +3,14 @@
 import { usePathname } from 'next/navigation';
 import { Suspense } from 'react';
 
+import { VerifyBanner } from './auth/VerifyBanner';
 import { BottomNav } from './BottomNav';
 import { TopNav } from './TopNav';
 
-/** Auth and onboarding render edge-to-edge with no chrome. */
-const BARE_ROUTES = ['/login', '/register', '/onboarding'];
-
 /**
- * Routes that manage their own scrolling and want the full viewport width:
- * the AI advisor and the message threads are two-pane apps, not documents in
- * the 1320px reading column.
+ * Routes that manage their own scrolling and drop the page gutter entirely:
+ * the AI advisor and the message threads are two-pane apps whose panels run
+ * to the glass, not documents that want padding around them.
  */
 const FLUSH_ROUTES = ['/ai', '/messages'];
 
@@ -20,23 +18,20 @@ const matches = (routes: string[], pathname: string) =>
   routes.some((r) => pathname === r || pathname.startsWith(`${r}/`));
 
 /**
- * The application shell.
+ * The application shell, for the `(app)` route group only.
  *
- * - Normal routes: fixed TopNav, content centred in the column, BottomNav on
- *   phones.
- * - Flush routes: TopNav plus a full-width main the page fills itself.
- * - Bare routes: no chrome at all.
+ * It no longer decides whether to render chrome — the route groups do that. A
+ * screen with no nav belongs in `(auth)`, whose layout renders nothing at all.
+ * This used to carry a `BARE_ROUTES` list that had to be kept in step by hand;
+ * moving the nav into `(app)/layout.tsx` made the list unnecessary, which is a
+ * whole class of "why is the nav showing on sign-in" bug that can no longer
+ * happen.
  *
  * A client component only because it needs the current pathname; the
  * server-rendered page tree passes straight through as children.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-
-  if (matches(BARE_ROUTES, pathname)) {
-    return <main className="app-main bare">{children}</main>;
-  }
-
   const flush = matches(FLUSH_ROUTES, pathname);
 
   return (
@@ -46,6 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TopNav />
       </Suspense>
       <main className={`app-main${flush ? ' flush' : ''}`}>
+        <VerifyBanner />
         <div className="app-content">{children}</div>
       </main>
       <BottomNav />

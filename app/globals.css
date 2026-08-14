@@ -3,56 +3,125 @@
 @tailwind utilities;
 
 /* ===========================================================================
-   VELVET — OBSIDIAN + COPPER
+   VELVET — MONOCHROME INDIGO
    ---------------------------------------------------------------------------
-   One warm obsidian base, one copper accent hue, three typefaces. The whole
-   product composes from the tokens below — don't introduce a second accent,
-   don't reach for a cold grey, and never use a white background.
+   Real velvet is not two colours. It is one dye at three values — the nap
+   catches light by direction, so the same hue reads dark at the base of the
+   pile and bright where light lands. The whole palette is therefore a single
+   hue varied only in lightness and saturation.
+
+   There is no second accent anywhere in the interface. A new component's
+   colour is derived by moving along this ramp, never by introducing a hue.
+
+   No glow: elevation is black only. Posters are the only saturated thing on
+   screen, and nothing in the chrome may compete with them.
 
    Full spec, including which token belongs on which element: CLAUDE.md.
    =========================================================================== */
 
 :root {
-  /* --- surfaces ----------------------------------------------------------
-     Warm obsidian, never blue-black. --bg-input is the field fill called for
-     by the spec; it reads as "sunk" against --bg-raise. */
-  --bg: #0c0a08;
-  --bg-raise: #14100c;
-  --bg-sunk: #080604;
-  --bg-input: #1a1610;
+  /* --- ground: base of the pile ------------------------------------------ */
+  --v-ink: #07071a; /* app background, deepest layer */
+  --v-surface: #0d0e2a; /* cards, stat bar */
+  --v-nav: #12133a; /* navbar, one step lighter than surface */
+  --v-raise: #181a48; /* hover, elevated panels, inputs */
+  --v-hero-a: #171645; /* hero gradient start */
+  --v-hero-b: #07071a; /* hero gradient end */
+  --v-sunk: #04040e; /* deepest inset — one step below ink */
 
-  /* --- copper ramp -------------------------------------------------------
-     --accent is the brand core: section numbers, active states, filled
-     buttons, the ripple. The ramp lightens from there and is never
-     hue-shifted toward red or yellow. */
-  --accent: #c8691a; /* burnt copper — brand core */
-  --accent-bright: #e08840; /* lighter copper — scores, hovers, markers */
-  --accent-light: #eaa568; /* hero italic, active nav */
-  --accent-pale: #e8c49a; /* cream — body copy on dark, synopsis */
-  --accent-deep: #8f4a12; /* pressed states, gradient ends */
+  /* --- accent: where the light lands ------------------------------------- */
+  --v-accent: #9691e0; /* active nav, buttons, links, stars */
+  --v-accent-hi: #cfccf5; /* headline highlight, stat values */
+  --v-accent-dim: #4c4890; /* hairlines, disabled, muted icons */
+  /* Derived step between accent and accent-hi. Holds the brightness the hero
+     italic and active nav carried before the swap. */
+  --v-accent-mid: #b1ade8;
 
-  /* --- text --------------------------------------------------------------
-     --white is an off-white with warmth in it (#f5f0ea), never #fff. */
-  --white: #f5f0ea;
-  --cream: #e8c49a;
-  --display: #f5f0ea; /* headings, stat figures, wordmark's VEL */
-  --ink: #e8c49a; /* primary UI labels, body */
-  --muted: #8a7360; /* meta, captions, placeholders */
-  --muted-2: #b09578; /* secondary labels, review body */
+  /* --- text ---------------------------------------------------------------
+     --v-mist is lifted from the brief's #77749b to #807da1: same hue (244.6°)
+     and saturation (16.3%), lightness 53.1% → 56.1%. At the original value it
+     measured 4.27:1 on --v-surface and missed the 4.5:1 floor the brief itself
+     sets. This is the smallest move along the ramp that clears it. */
+  --v-text: #e0def2; /* primary copy */
+  --v-mist: #807da1; /* secondary copy, labels, metadata */
+  --v-faint: #55527a; /* tertiary, placeholders, timestamps */
+  --v-display: #f0eefa; /* headings — the brightest neutral */
+  /* Derived step between mist and text, for the secondary-label tier. */
+  --v-mist-2: #9996b3;
 
-  /* --- lines ------------------------------------------------------------- */
-  --line: rgba(200, 105, 26, 0.32); /* default borders, chips */
-  --line-soft: rgba(232, 196, 154, 0.12); /* hairlines, card borders */
-  --line-strong: rgba(224, 136, 64, 0.5); /* primary button border */
-  --line-accent: #e08840; /* selected chip, focus ring */
+  /* --- structure --------------------------------------------------------- */
+  --v-line: rgba(207, 204, 245, 0.1);
+  --v-line-solid: #1e1f52;
+  --v-overlay: rgba(7, 7, 26, 0.76); /* modal scrim */
+
+  /* --- semantic: the only permitted off-hue colours ----------------------- */
+  --v-success: #5fbf95;
+  --v-warning: #d8b45c;
+  --v-danger: #d9707a;
+
+  /* --- foreground on accent fills ----------------------------------------
+     The accent is light, so a fill takes dark text. This is the one inversion
+     the migration forces: indigo fills carried --white at 3.38:1, indigo fills
+     carry --v-on-accent at 7.14:1. */
+  --v-on-accent: #050516;
+
+  /* --- rgb channels -------------------------------------------------------
+     Composition happens through rgba(var(--token-rgb), α), so an alpha wash is
+     still a token and never a raw hue. Keep each in step with its hex above. */
+  --v-ink-rgb: 7, 7, 26;
+  --v-surface-rgb: 13, 14, 42;
+  --v-sunk-rgb: 4, 4, 14;
+  --v-raise-rgb: 24, 26, 72;
+  --v-accent-rgb: 150, 145, 224;
+  --v-accent-hi-rgb: 207, 204, 245;
+  --v-text-rgb: 224, 222, 242;
+  --v-danger-rgb: 217, 112, 122;
+
+  /* =========================================================================
+     Legacy names, mapped by MEANING rather than by name.
+
+     Every component class in this file still reads these, so the migration is
+     a value swap and not a 5,000-line rename. Note --ink: it named the primary
+     *text* colour here long before the brief used --v-ink for the *background*,
+     so it maps to --v-text. Matching on the name would have inverted the page.
+     ========================================================================= */
+
+  /* --- surfaces --- */
+  --bg: var(--v-ink);
+  --bg-raise: var(--v-surface);
+  --bg-sunk: var(--v-sunk);
+  --bg-input: var(--v-raise);
+
+  /* --- indigo ramp --- */
+  --accent: var(--v-accent);
+  --accent-bright: var(--v-accent-hi);
+  --accent-light: var(--v-accent-mid);
+  --accent-pale: var(--v-text);
+  --accent-deep: var(--v-accent-dim);
+
+  /* --- text --- */
+  --white: var(--v-display);
+  --cream: var(--v-text);
+  --display: var(--v-display);
+  --ink: var(--v-text);
+  --muted: var(--v-mist);
+  --muted-2: var(--v-mist-2);
+  --on-accent: var(--v-on-accent);
+
+  /* --- lines --- */
+  --line: var(--v-line);
+  --line-soft: rgba(var(--v-accent-hi-rgb), 0.07);
+  --line-strong: rgba(var(--v-accent-hi-rgb), 0.22);
+  --line-accent: var(--v-accent-hi);
 
   /* --- surface washes ---------------------------------------------------- */
   --card: rgba(255, 255, 255, 0.032);
   --card-hover: rgba(255, 255, 255, 0.055);
 
   /* --- semantic ---------------------------------------------------------- */
-  --ok: #4fb477;
-  --bad: #e0603a;
+  --ok: var(--v-success);
+  --bad: var(--v-danger);
+  --warn: var(--v-warning);
 
   /* --- type -------------------------------------------------------------- */
   --font-ui: var(--font-inter), 'Inter', system-ui, sans-serif;
@@ -101,7 +170,15 @@ body {
 
 ::selection {
   background: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
+}
+
+/* §4: one focus ring for every interactive element. Held at zero specificity
+   with :where() so a component can still place its own — but a component that
+   removes it without replacing it now stands out as the exception it is. */
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--v-accent-hi);
+  outline-offset: 2px;
 }
 
 /* ===========================================================================
@@ -172,16 +249,16 @@ body {
     transform: translateY(-14px) rotate(var(--tilt, 0deg));
   }
 }
-/* The onboarding "ready" pulse. */
+/* The onboarding "ready" pulse. Scale only — the indigo glow this used to
+   bloom is exactly what the indigo system forbids, so the motion survives and
+   the halo does not. */
 @keyframes pulseGlow {
   0%,
   100% {
     transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(200, 105, 26, 0.45);
   }
   50% {
     transform: scale(1.04);
-    box-shadow: 0 0 46px 14px rgba(200, 105, 26, 0.16);
   }
 }
 /* Typing indicator dots. */
@@ -225,7 +302,7 @@ body {
   transform: translateY(0);
 }
 
-/** Copper ripple. The span is positioned by JS at the click point. */
+/** Indigo ripple. The span is positioned by JS at the click point. */
 .ripple-host {
   position: relative;
   overflow: hidden;
@@ -237,7 +314,7 @@ body {
   height: 18px;
   margin: -9px 0 0 -9px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(224, 136, 64, 0.55), rgba(200, 105, 26, 0));
+  background: radial-gradient(circle, rgba(var(--v-accent-hi-rgb), 0.55), rgba(var(--v-accent-rgb), 0));
   pointer-events: none;
   transform: scale(0);
   animation: rippleOut 0.62s var(--ease) forwards;
@@ -297,9 +374,11 @@ body {
   right: 0;
   height: var(--nav-h);
   z-index: 50;
-  background: rgba(12, 10, 8, 0.86);
+  /* §3: the nav carries its own surface, one step lighter than --v-surface, so
+     it separates from the page on a hairline rather than a heavy border. */
+  background: var(--v-nav);
   backdrop-filter: blur(18px);
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--v-accent-dim);
 }
 .topnav-inner {
   height: 100%;
@@ -413,7 +492,8 @@ body {
   color: var(--muted);
 }
 .topnav-search input:focus {
-  outline: none;
+  outline: 2px solid var(--v-accent-hi);
+  outline-offset: 2px;
   border-color: var(--line-accent);
   background: var(--bg-raise);
 }
@@ -453,7 +533,7 @@ body {
   padding: 0 4px;
   border-radius: 100px;
   background: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
   font-size: 9.5px;
   font-weight: 700;
   line-height: 16px;
@@ -471,7 +551,10 @@ body {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  /* Runs along the dark half of the ramp so the initials stay light, the way
+     the indigo gradient did. Inverting to a light fill would strand them at
+     2.5:1 against the dim end. */
+  background: linear-gradient(135deg, var(--v-accent-dim), var(--v-line-solid));
   border: 1px solid var(--line);
   color: var(--white);
   font-family: var(--font-cond);
@@ -492,7 +575,7 @@ body {
   object-fit: cover;
 }
 
-/** The Pro pill: a filled copper chip when subscribed, an outline CTA when not. */
+/** The Pro pill: a filled indigo chip when subscribed, an outline CTA when not. */
 .pro-pill {
   display: inline-flex;
   align-items: center;
@@ -518,7 +601,7 @@ body {
 .pro-pill.on {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
 }
 
 /* dropdown shared by the bell and the avatar */
@@ -651,9 +734,9 @@ body {
   display: flex;
   justify-content: space-around;
   padding: 10px 0 18px;
-  background: rgba(12, 10, 8, 0.94);
+  background: var(--v-nav);
   backdrop-filter: blur(20px);
-  border-top: 1px solid var(--line-soft);
+  border-top: 1px solid var(--v-accent-dim);
   z-index: 45;
 }
 @media (min-width: 901px) {
@@ -683,7 +766,7 @@ body {
 
 /* ===========================================================================
    BUTTONS
-   Outlined by default; .btn-fill is the one solid copper CTA.
+   Outlined by default; .btn-fill is the one solid indigo CTA.
    =========================================================================== */
 
 .btn-primary,
@@ -729,7 +812,7 @@ body {
 }
 .btn-fill {
   font-weight: 600;
-  color: var(--white);
+  color: var(--on-accent);
   background: var(--accent);
   border: 1px solid var(--accent);
 }
@@ -822,15 +905,15 @@ body {
   color: var(--muted);
 }
 .input:focus {
-  outline: none;
   border-color: var(--line-accent);
-  box-shadow: 0 0 0 3px rgba(200, 105, 26, 0.14);
+  outline: 2px solid var(--v-accent-hi);
+  outline-offset: 2px;
 }
 .input:-webkit-autofill,
 .input:-webkit-autofill:focus {
-  -webkit-text-fill-color: #e8c49a;
-  -webkit-box-shadow: 0 0 0 1000px #1a1610 inset;
-  caret-color: #e8c49a;
+  -webkit-text-fill-color: var(--v-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--v-raise) inset;
+  caret-color: var(--v-text);
   transition: background-color 9999s ease-in-out 0s;
 }
 textarea.input {
@@ -949,9 +1032,9 @@ textarea.input {
 }
 
 .form-error {
-  background: rgba(224, 96, 58, 0.1);
-  border: 1px solid rgba(224, 96, 58, 0.35);
-  color: #e8825f;
+  background: rgba(var(--v-danger-rgb), 0.1);
+  border: 1px solid rgba(var(--v-danger-rgb), 0.35);
+  color: var(--v-danger);
   font-size: 13px;
   font-weight: 400;
   padding: 12px 14px;
@@ -963,7 +1046,7 @@ textarea.input {
   width: 17px;
   height: 17px;
   border-radius: 50%;
-  border: 2px solid rgba(245, 240, 234, 0.25);
+  border: 2px solid rgba(var(--v-text-rgb), 0.25);
   border-top-color: currentColor;
   animation: spin 0.7s linear infinite;
   flex-shrink: 0;
@@ -991,7 +1074,7 @@ textarea.input {
   align-items: baseline;
   gap: 13px;
 }
-/* Editorial section numbers — 01, 02, 03 — in copper. */
+/* Editorial section numbers — 01, 02, 03 — in indigo. */
 .section-num {
   font-family: var(--font-cond);
   font-weight: 600;
@@ -1081,7 +1164,7 @@ textarea.input {
     padding: 68px 0 56px;
   }
 }
-/* Ambient copper bloom behind the hero. */
+/* Ambient indigo bloom behind the hero. */
 .home-hero::before {
   content: '';
   position: absolute;
@@ -1090,7 +1173,7 @@ textarea.input {
   width: 820px;
   height: 640px;
   max-width: 125%;
-  background: radial-gradient(58% 52% at 32% 38%, rgba(200, 105, 26, 0.17), transparent 68%);
+  background: radial-gradient(58% 52% at 32% 38%, rgba(var(--v-accent-rgb), 0.17), transparent 68%);
   pointer-events: none;
   z-index: 0;
 }
@@ -1260,6 +1343,10 @@ textarea.input {
 .stat-cell {
   padding: 22px 22px 24px;
   min-width: 0;
+  /* §3: the hairline that makes the strip read as built rather than stacked.
+     Along with the nav's bottom border, this is the only place --v-accent-dim
+     appears structurally. */
+  border-top: 1px solid var(--v-accent-dim);
 }
 .stat-cell + .stat-cell {
   border-left: 1px solid var(--line-soft);
@@ -1368,7 +1455,7 @@ textarea.input {
   border-color: var(--line-strong);
 }
 .chip.active {
-  color: var(--white);
+  color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
 }
@@ -1558,7 +1645,7 @@ textarea.input {
   left: -60%;
   width: 45%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(232, 196, 154, 0.13), transparent);
+  background: linear-gradient(90deg, transparent, rgba(var(--v-accent-hi-rgb), 0.13), transparent);
   transform: skewX(-20deg);
   pointer-events: none;
   z-index: 3;
@@ -1586,7 +1673,7 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: rgba(8, 6, 4, 0.74);
+  background: rgba(var(--v-sunk-rgb), 0.74);
   backdrop-filter: blur(8px);
   border-radius: 100px;
   padding: 4px 9px;
@@ -1606,7 +1693,7 @@ textarea.input {
   letter-spacing: 1.3px;
   text-transform: uppercase;
   color: var(--accent-pale);
-  background: rgba(8, 6, 4, 0.74);
+  background: rgba(var(--v-sunk-rgb), 0.74);
   backdrop-filter: blur(8px);
   border-radius: 3px;
   padding: 4px 7px;
@@ -1618,7 +1705,7 @@ textarea.input {
   left: 8px;
   z-index: 4;
   background: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
   border-radius: 100px;
   padding: 3px 9px;
   font-size: 10.5px;
@@ -1636,7 +1723,7 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(8, 6, 4, 0.78);
+  background: rgba(var(--v-sunk-rgb), 0.78);
   backdrop-filter: blur(8px);
   border: 1px solid var(--line-soft);
   color: var(--accent-pale);
@@ -1674,7 +1761,7 @@ textarea.input {
   bottom: 0;
   z-index: 4;
   padding: 26px 10px 10px;
-  background: linear-gradient(180deg, transparent, rgba(8, 6, 4, 0.92) 46%);
+  background: linear-gradient(180deg, transparent, rgba(var(--v-sunk-rgb), 0.92) 46%);
   color: var(--accent-pale);
   font-size: 11.5px;
   font-weight: 300;
@@ -1734,7 +1821,7 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(8, 6, 4, 0.8);
+  background: rgba(var(--v-sunk-rgb), 0.8);
   border: 1px solid var(--line-soft);
   color: var(--muted-2);
   cursor: pointer;
@@ -1747,7 +1834,7 @@ textarea.input {
 }
 .poster-remove:hover {
   color: var(--bad);
-  border-color: rgba(224, 96, 58, 0.5);
+  border-color: rgba(var(--v-danger-rgb), 0.5);
 }
 .poster-remove svg {
   width: 13px;
@@ -1848,7 +1935,7 @@ textarea.input {
   position: absolute;
   inset: auto 0 0 0;
   padding: 60px 24px 24px;
-  background: linear-gradient(180deg, transparent, rgba(8, 6, 4, 0.94) 55%);
+  background: linear-gradient(180deg, transparent, rgba(var(--v-sunk-rgb), 0.94) 55%);
   z-index: 2;
 }
 .editorial-rank {
@@ -2016,7 +2103,10 @@ textarea.input {
   border-radius: 50%;
   flex-shrink: 0;
   overflow: hidden;
-  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  /* Runs along the dark half of the ramp so the initials stay light, the way
+     the indigo gradient did. Inverting to a light fill would strand them at
+     2.5:1 against the dim end. */
+  background: linear-gradient(135deg, var(--v-accent-dim), var(--v-line-solid));
   color: var(--white);
   display: flex;
   align-items: center;
@@ -2054,7 +2144,7 @@ textarea.input {
   height: 132px;
   font-size: 52px;
   border: 3px solid var(--accent);
-  box-shadow: 0 0 0 6px rgba(200, 105, 26, 0.12);
+  outline: 6px solid rgba(var(--v-accent-rgb), 0.12);
 }
 
 /* ===========================================================================
@@ -2078,7 +2168,7 @@ textarea.input {
   transform: translateX(-50%);
   width: 720px;
   height: 620px;
-  background: radial-gradient(circle, rgba(200, 105, 26, 0.16), transparent 68%);
+  background: radial-gradient(circle, rgba(var(--v-accent-rgb), 0.16), transparent 68%);
   pointer-events: none;
 }
 .onb-progress {
@@ -2086,7 +2176,7 @@ textarea.input {
   z-index: 2;
   height: 3px;
   width: 100%;
-  background: rgba(232, 196, 154, 0.08);
+  background: rgba(var(--v-accent-hi-rgb), 0.08);
   flex-shrink: 0;
 }
 .onb-progress i {
@@ -2281,8 +2371,7 @@ textarea.input {
 .select-card.on {
   border-color: var(--accent);
   color: var(--white);
-  background: rgba(200, 105, 26, 0.12);
-  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 26px rgba(200, 105, 26, 0.18);
+  background: rgba(var(--v-accent-rgb), 0.12);
 }
 
 /* genre grid */
@@ -2319,8 +2408,7 @@ textarea.input {
 .genre-card.on {
   border-color: var(--accent);
   color: var(--white);
-  background: rgba(200, 105, 26, 0.12);
-  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 22px rgba(200, 105, 26, 0.2);
+  background: rgba(var(--v-accent-rgb), 0.12);
 }
 .genre-icon {
   font-size: 16px;
@@ -2355,7 +2443,7 @@ textarea.input {
   overflow: hidden;
   background: var(--bg-input);
   border: 3px solid var(--accent);
-  box-shadow: 0 0 0 7px rgba(200, 105, 26, 0.1);
+  outline: 7px solid rgba(var(--v-accent-rgb), 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2380,7 +2468,7 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(200, 105, 26, 0.1);
+  background: rgba(var(--v-accent-rgb), 0.1);
   border: 1px solid var(--line);
   color: var(--accent);
   animation: pulseGlow 2.4s ease-in-out infinite;
@@ -2414,7 +2502,7 @@ textarea.input {
   transform: translateX(-50%);
   width: 480px;
   height: 480px;
-  background: radial-gradient(circle, rgba(200, 105, 26, 0.17), transparent 70%);
+  background: radial-gradient(circle, rgba(var(--v-accent-rgb), 0.17), transparent 70%);
   pointer-events: none;
 }
 .auth-card {
@@ -2592,7 +2680,7 @@ textarea.input {
   /* Also the placeholder: visible until a poster loads, and the permanent state
      when the catalogue is unreachable. */
   background:
-    linear-gradient(150deg, rgba(200, 105, 26, 0.16), rgba(20, 16, 12, 0.9) 62%),
+    linear-gradient(150deg, rgba(var(--v-accent-rgb), 0.16), rgba(var(--v-surface-rgb), 0.9) 62%),
     var(--bg-raise);
 }
 .poster-tile-img {
@@ -2616,13 +2704,13 @@ textarea.input {
   background:
     linear-gradient(
       180deg,
-      rgba(12, 10, 8, 0.92) 0%,
-      rgba(12, 10, 8, 0.3) 22%,
-      rgba(12, 10, 8, 0.34) 62%,
-      rgba(12, 10, 8, 0.95) 100%
+      rgba(var(--v-ink-rgb), 0.92) 0%,
+      rgba(var(--v-ink-rgb), 0.3) 22%,
+      rgba(var(--v-ink-rgb), 0.34) 62%,
+      rgba(var(--v-ink-rgb), 0.95) 100%
     ),
-    linear-gradient(90deg, rgba(12, 10, 8, 0.42), rgba(12, 10, 8, 0.8)),
-    radial-gradient(140% 100% at 28% 48%, rgba(12, 10, 8, 0), rgba(12, 10, 8, 0.5) 90%);
+    linear-gradient(90deg, rgba(var(--v-ink-rgb), 0.42), rgba(var(--v-ink-rgb), 0.8)),
+    radial-gradient(140% 100% at 28% 48%, rgba(var(--v-ink-rgb), 0), rgba(var(--v-ink-rgb), 0.5) 90%);
 }
 
 /* --- the form panel ------------------------------------------------------- */
@@ -2676,7 +2764,12 @@ textarea.input {
 
 /* The one deliberately un-Velvet surface in the app: Google's branding requires
    their mark on white, and a recoloured Google button reads as phishing. The
-   radius, the type and the rule around it still belong to the system. */
+   radius, the type and the rule around it still belong to the system.
+
+   These four greys and the `fill` values on the G in components/auth/
+   GoogleButton.tsx are, alongside the semantic status colours, the only values
+   in the product that are not on the indigo ramp. They are a trademark
+   requirement, not decoration, so the one-hue rule does not reach them. */
 .btn-google {
   margin-top: 26px;
   width: 100%;
@@ -2758,7 +2851,7 @@ textarea.input {
 
 /* --- email verification --------------------------------------------------- */
 
-/* The strip under the nav until an address is confirmed. Copper, not red: this
+/* The strip under the nav until an address is confirmed. Indigo, not red: this
    is an unfinished step, not an error. */
 .verify-banner {
   display: flex;
@@ -2767,7 +2860,7 @@ textarea.input {
   max-width: var(--col);
   margin: 0 auto;
   padding: 12px var(--gutter);
-  background: linear-gradient(90deg, rgba(200, 105, 26, 0.14), rgba(200, 105, 26, 0.05));
+  background: linear-gradient(90deg, rgba(var(--v-accent-rgb), 0.14), rgba(var(--v-accent-rgb), 0.05));
   border-bottom: 1px solid var(--line-accent);
 }
 .verify-banner-dot {
@@ -2776,7 +2869,7 @@ textarea.input {
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(200, 105, 26, 0.16);
+  outline: 4px solid rgba(var(--v-accent-rgb), 0.16);
 }
 .verify-banner-text {
   flex: 1;
@@ -2810,11 +2903,11 @@ textarea.input {
   font-size: 23px;
   line-height: 1;
   border: 1px solid var(--line-accent);
-  background: rgba(200, 105, 26, 0.1);
+  background: rgba(var(--v-accent-rgb), 0.1);
   color: var(--accent-light);
 }
 .verify-mark.verified {
-  background: rgba(200, 105, 26, 0.18);
+  background: rgba(var(--v-accent-rgb), 0.18);
   color: var(--accent-bright);
 }
 .verify-mark.expired {
@@ -2921,12 +3014,12 @@ textarea.input {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(120% 80% at 70% 15%, rgba(200, 105, 26, 0.2), transparent 62%),
-    linear-gradient(180deg, rgba(12, 10, 8, 0.72) 0%, rgba(12, 10, 8, 0.86) 55%, var(--bg) 100%);
+  background: radial-gradient(120% 80% at 70% 15%, rgba(var(--v-accent-rgb), 0.2), transparent 62%),
+    linear-gradient(180deg, rgba(var(--v-ink-rgb), 0.72) 0%, rgba(var(--v-ink-rgb), 0.86) 55%, var(--bg) 100%);
 }
 .detail-backdrop.plain {
-  background: radial-gradient(120% 80% at 70% 20%, rgba(200, 105, 26, 0.2), transparent 62%),
-    linear-gradient(160deg, #241608 0%, #150f08 45%, var(--bg) 100%);
+  background: radial-gradient(120% 80% at 70% 20%, rgba(var(--v-accent-rgb), 0.2), transparent 62%),
+    linear-gradient(160deg, var(--v-hero-a) 0%, var(--v-surface) 45%, var(--bg) 100%);
   animation: slowZoom 18s ease-in-out infinite alternate;
 }
 .detail-hero-inner {
@@ -3151,7 +3244,7 @@ textarea.input {
   right: -18%;
   width: 220px;
   height: 220px;
-  background: radial-gradient(circle, rgba(200, 105, 26, 0.16), transparent 70%);
+  background: radial-gradient(circle, rgba(var(--v-accent-rgb), 0.16), transparent 70%);
   pointer-events: none;
 }
 .rate-label {
@@ -3189,7 +3282,7 @@ textarea.input {
 .star path {
   transition: fill var(--t-fast) var(--ease), stroke var(--t-fast) var(--ease);
 }
-/* Star ratings are always copper. */
+/* Star ratings are always indigo. */
 .star.filled path {
   fill: var(--accent);
   stroke: var(--accent);
@@ -3276,7 +3369,7 @@ textarea.input {
   width: 14px;
   height: 14px;
 }
-/* The heart fills copper and pops on like. */
+/* The heart fills indigo and pops on like. */
 .review-act.liked {
   color: var(--accent);
 }
@@ -3328,7 +3421,7 @@ textarea.input {
   position: relative;
   border-radius: 6px;
   padding: 22px;
-  background: linear-gradient(115deg, rgba(200, 105, 26, 0.14), rgba(20, 16, 12, 0.6));
+  background: linear-gradient(115deg, rgba(var(--v-accent-rgb), 0.14), rgba(var(--v-surface-rgb), 0.6));
   border: 1px solid var(--line);
   overflow: hidden;
 }
@@ -3339,7 +3432,7 @@ textarea.input {
   left: -60%;
   width: 40%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(232, 196, 154, 0.1), transparent);
+  background: linear-gradient(90deg, transparent, rgba(var(--v-accent-hi-rgb), 0.1), transparent);
   transform: skewX(-20deg);
   animation: shine 4.2s infinite;
   pointer-events: none;
@@ -3532,13 +3625,13 @@ textarea.input {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* User: right aligned, copper. */
+/* User: right aligned, indigo. */
 .msg.from-me .msg-bubble {
   background: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
   border-bottom-right-radius: 2px;
 }
-/* AI: left aligned, dark card with a copper left border. */
+/* AI: left aligned, dark card with a indigo left border. */
 .msg.from-ai .msg-bubble {
   background: var(--bg-input);
   color: var(--accent-pale);
@@ -3573,12 +3666,12 @@ textarea.input {
   color: var(--accent-bright);
   font-weight: 500;
   text-decoration: none;
-  border-bottom: 1px solid rgba(224, 136, 64, 0.4);
+  border-bottom: 1px solid rgba(var(--v-accent-hi-rgb), 0.4);
   transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
 .msg.from-me .msg-bubble a {
   color: var(--white);
-  border-bottom-color: rgba(245, 240, 234, 0.5);
+  border-bottom-color: rgba(var(--v-text-rgb), 0.5);
 }
 .msg-bubble a:hover {
   color: var(--accent-light);
@@ -3855,7 +3948,7 @@ textarea.input {
 
 /* --- notification cards ---------------------------------------------------
    One row layout for all three types; only the trailing action differs. The
-   unread marker is a copper hairline on the leading edge rather than a tinted
+   unread marker is a indigo hairline on the leading edge rather than a tinted
    background, so a long unread run doesn't turn the list into a block. */
 .notif-card {
   display: flex;
@@ -4045,7 +4138,8 @@ textarea.input {
   color: var(--muted);
 }
 .composer textarea:focus {
-  outline: none;
+  outline: 2px solid var(--v-accent-hi);
+  outline-offset: 2px;
   border-color: var(--line-accent);
 }
 .send-btn {
@@ -4055,7 +4149,7 @@ textarea.input {
   border-radius: 50%;
   border: none;
   background: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4241,14 +4335,15 @@ textarea.input {
   animation: msgIn 0.28s var(--ease) both;
   margin-bottom: 4px;
 }
-/* Sent: right, copper, white text. */
+/* Sent: right, filled indigo, dark text — the accent is light, so the bubble
+   takes --on-accent rather than the off-white the copper fill carried. */
 .bubble.mine {
   align-self: flex-end;
   background: var(--accent);
-  color: var(--white);
+  color: var(--on-accent);
   border-bottom-right-radius: 2px;
 }
-/* Received: left, dark card, cream text, copper left border. */
+/* Received: left, dark card, pale indigo text, indigo left border. */
 .bubble.theirs {
   align-self: flex-start;
   background: var(--bg-input);
@@ -4444,7 +4539,7 @@ textarea.input {
   justify-content: flex-end;
   gap: 4px;
   padding: 10px 9px;
-  background: linear-gradient(180deg, transparent, rgba(8, 6, 4, 0.92));
+  background: linear-gradient(180deg, transparent, rgba(var(--v-sunk-rgb), 0.92));
   opacity: 0;
   transition: opacity var(--t-fast) var(--ease);
 }
@@ -4513,7 +4608,7 @@ textarea.input {
   position: fixed;
   inset: 0;
   z-index: 80;
-  background: rgba(8, 6, 4, 0.78);
+  background: rgba(var(--v-sunk-rgb), 0.78);
   backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
@@ -4603,10 +4698,10 @@ textarea.input {
 .notif:hover {
   background: var(--card);
 }
-/* Unread: copper left border + a slightly lighter ground. */
+/* Unread: indigo left border + a slightly lighter ground. */
 .notif.unread {
   border-left-color: var(--accent);
-  background: rgba(200, 105, 26, 0.05);
+  background: rgba(var(--v-accent-rgb), 0.05);
 }
 .notif-body {
   flex: 1;
@@ -4695,9 +4790,9 @@ textarea.input {
   margin-top: 14px;
 }
 
-/* Copper shimmer skeletons. */
+/* Indigo shimmer skeletons. */
 .skeleton {
-  background: linear-gradient(90deg, #14100c 25%, #241a10 50%, #14100c 75%);
+  background: linear-gradient(90deg, var(--v-surface) 25%, var(--v-raise) 50%, var(--v-surface) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.4s infinite;
   border-radius: 5px;
@@ -4763,7 +4858,7 @@ textarea.input {
   font-weight: 500;
 }
 
-/* Toasts: bottom right, dark card, copper dot. */
+/* Toasts: bottom right, dark card, indigo dot. */
 .toast-stack {
   position: fixed;
   right: 24px;
@@ -4876,6 +4971,13 @@ input[type='range'] {
   background: var(--line-soft);
   outline: none;
 }
+/* The rule above outranks the zero-specificity ring in the reset, so the track
+   has to ask for its own or the slider becomes the one control you cannot see
+   focus on. */
+input[type='range']:focus-visible {
+  outline: 2px solid var(--v-accent-hi);
+  outline-offset: 4px;
+}
 input[type='range']::-webkit-slider-thumb {
   appearance: none;
   width: 16px;
@@ -4914,7 +5016,8 @@ input[type='range']::-moz-range-thumb {
   color: var(--muted);
 }
 .search-field:focus {
-  outline: none;
+  outline: 2px solid var(--v-accent-hi);
+  outline-offset: 2px;
   border-color: var(--line-accent);
 }
 .search-wrap .search-icon {
