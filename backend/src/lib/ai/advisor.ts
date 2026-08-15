@@ -1,29 +1,12 @@
-import Anthropic from '@anthropic-ai/sdk';
-
-import { configured, env } from '../config/env';
-
 /**
- * The Claude-backed advisor.
+ * The advisor's own logic: what it knows about the user, how it is asked, and
+ * what is pulled back out of the reply.
  *
- * One client is reused across requests (the SDK is designed for that). It is
- * created lazily so the server still boots with no ANTHROPIC_API_KEY — the AI
- * routes then answer 503 rather than the process dying at import time.
+ * None of this is provider-specific, which is the point — it lived inside the
+ * Claude service before and would have had to be duplicated the moment a second
+ * provider existed. Prompt changes belong here, transport belongs in the
+ * provider modules.
  */
-
-let client: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (!configured.ai()) throw new AiNotConfiguredError();
-  client ??= new Anthropic({ apiKey: env.anthropicApiKey });
-  return client;
-}
-
-export class AiNotConfiguredError extends Error {
-  constructor() {
-    super('The AI advisor is not configured on this server');
-    this.name = 'AiNotConfiguredError';
-  }
-}
 
 /** Everything the system prompt interpolates about the person asking. */
 export interface TasteProfile {
@@ -38,6 +21,11 @@ export interface TasteProfile {
   recentWatches: string[];
 }
 
+export interface AdvisorTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 const none = (v: string) => v || 'not shared';
 const list = (v: string[]) => (v.length ? v.join(', ') : 'none yet');
 
@@ -48,6 +36,11 @@ const list = (v: string[]) => (v.length ? v.join(', ') : 'none yet');
  * a generic recommendation is a failure here, so the prompt says so explicitly
  * and the profile lines are always present even when a field is empty (an
  * absent line reads as "no data" to the model; "none yet" is unambiguous).
+ *
+ * Carried across the Gemini migration unchanged apart from the closing
+ * paragraph. It contains no XML scaffolding and no "reply only in JSON"
+ * instruction, so there was nothing Claude-shaped to unpick: it asks for prose
+ * with `[[Title]]` markers, which both model families handle.
  */
 export function buildSystemPrompt(p: TasteProfile, filmContext?: string): string {
   const base = `You are Velvet's personal film and entertainment advisor.
@@ -72,6 +65,10 @@ Never be generic. Always reference their profile data.
 Keep responses conversational, warm, and under 200 words
 unless they ask for a detailed breakdown.
 
+You are talking about films, series and games, which means horror, crime,
+war and other mature subject matter are ordinary parts of the conversation.
+Discuss them as a critic would — plainly and without moralising.
+
 When you name a film, series or game you are recommending, wrap the title in
 double square brackets like [[The Brutalist]] so the app can link it. Use that
 form only for titles you are actually recommending, not for passing mentions.`;
@@ -82,52 +79,10 @@ form only for titles you are actually recommending, not for passing mentions.`;
     : base;
 }
 
-export interface AdvisorTurn {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-/**
- * Sends one turn to Claude and returns the reply text.
- *
- * `history` is the recent conversation, oldest first, excluding the new message.
- * It is trimmed by the caller — replaying an unbounded history would grow cost
- * without improving answers.
- */
-export async function askAdvisor(opts: {
-  profile: TasteProfile;
-  history: AdvisorTurn[];
-  message: string;
-  filmContext?: string;
-}): Promise<string> {
-  const anthropic = getClient();
-
-  const response = await anthropic.messages.create({
-    model: env.anthropicModel,
-    // Generous enough for the "detailed breakdown" case without truncating
-    // mid-sentence; the prompt asks for under 200 words in the normal case.
-    max_tokens: 2048,
-    system: buildSystemPrompt(opts.profile, opts.filmContext),
-    messages: [
-      ...opts.history.map((t) => ({ role: t.role, content: t.content })),
-      { role: 'user' as const, content: opts.message },
-    ],
-  });
-
-  // content is a discriminated union — take the text blocks and join them.
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
-
-  return text || "I didn't manage a reply there — ask me again?";
-}
-
 /**
  * Follow-up chips shown under an assistant message.
  *
- * Deliberately derived locally rather than with a second Claude call: it keeps
+ * Deliberately derived locally rather than with a second model call: it keeps
  * one user message to one API call (which is what the daily quota counts) and
  * the chips are conversational nudges, not content that needs a model.
  */
@@ -147,7 +102,15 @@ export function followUps(reply: string, profile: TasteProfile): string[] {
   return pool.slice(0, 3);
 }
 
-/** Pulls `[[Title]]` markers out of a reply. */
+/**
+ * Pulls `[[Title]]` markers out of a reply.
+ *
+ * Note for anyone tempted to replace this with Gemini's `responseSchema`: the
+ * advisor's output is prose with links *inside* it, not a list of titles beside
+ * it. A schema would force the reply into a shape the chat UI does not render
+ * and `linkTitles` could not rewrite. This is not the JSON-in-prose parsing
+ * that structured output exists to kill — there is none of that here.
+ */
 export function extractTitles(text: string): string[] {
   const out: string[] = [];
   const re = /\[\[([^\]]+)\]\]/g;

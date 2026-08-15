@@ -2,7 +2,7 @@
 
 Discover, rate and socially experience **films, series and games**. Next.js 14
 App Router + TypeScript on the front, an Express + MongoDB API behind it, a
-Claude-powered advisor at its centre.
+Gemini-powered advisor at its centre.
 
 ```bash
 npm run dev        # http://localhost:3000
@@ -310,7 +310,7 @@ Seams worth preserving:
 - `contentId` is a **string** throughout; TMDB and IGDB ids only coincide by
   accident, so the real key is the `(type, id)` pair.
 - Optimistic writes (save, follow, like) roll back on failure and say so.
-- Every integration degrades honestly: a missing Anthropic key gives the
+- Every integration degrades honestly: a missing Gemini key gives the
   advisor a "not configured" state, not a crash.
 
 ## Removed
@@ -331,3 +331,51 @@ That makes `AI_FREE_DAILY_MESSAGES` (default 10, in
 `backend/src/controllers/aiController.ts`) load-bearing: with no revenue, it is
 the only bound on what the model costs the person running the server. Raising it
 or exempting more accounts spends real money.
+
+---
+
+# The advisor
+
+**Gemini, behind a provider interface.** `backend/src/lib/ai/` is the only place
+that knows a vendor exists:
+
+```
+lib/ai/
+  provider.ts   AIProvider, the typed errors, retry/backoff, the cost log line
+  advisor.ts    the prompt, [[Title]] extraction, follow-up chips — no vendor
+  gemini.ts     the live provider
+  anthropic.ts  retained behind the flag so the two can be diffed
+  index.ts      selection + askAdvisor(); the ONLY module anything imports
+```
+
+Nothing outside that directory may import `./gemini` or `./anthropic` directly —
+that is what turns a provider swap back into a code change. `AI_PROVIDER`
+(`gemini` | `anthropic`, default `gemini`) chooses; anything unrecognised
+resolves to Gemini rather than silently falling back to the retired provider.
+
+- **Model is pinned, never a `-latest` alias** (`GEMINI_MODEL`, default
+  `gemini-3.6-flash`). An alias moves the model under a running deployment and
+  the first sign is changed answers.
+- **`thinkingLevel: MINIMAL`.** Reasoning tokens bill at the output rate, and a
+  200-word recommendation does not need deliberation. Thinking tokens are still
+  added to the output count in the log so the cost line stays honest.
+- **Safety thresholds are `OFF` on all four adjustable categories.** Velvet is
+  about films and games; the defaults block on horror synopses, violent games
+  and the plot of any crime film. `OFF` is one step past `BLOCK_NONE`.
+- **A refusal is an outcome, not an error.** `AiBlockedError` → 422 with an
+  `AI_BLOCKED:` marker, never a 500. It covers the whole blocking family —
+  `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` — not just
+  `SAFETY`, and a prompt rejected before generation counts too.
+- **`generateContent`, not the Interactions API.** Conversation history already
+  lives in Mongo (`AIChatMessage`, ten turns replayed by the controller), so
+  server-side state via `previous_interaction_id` would put history in two
+  places.
+- **Nothing streams.** `POST /api/ai/chat` is one request/response.
+  `AIProvider.stream()` is implemented for both providers but no route uses it.
+- **There is no JSON parsed out of prose.** `extractTitles` reads `[[Title]]`
+  markers from prose the chat renders inline; it is not fence-stripping and must
+  not be "upgraded" to `responseSchema`, which would change the reply into a
+  shape the UI cannot render and `linkTitles` cannot rewrite. `ChatOptions.json`
+  + `schema` exist for any future caller that genuinely wants structured output.
+- **`/api/ai/picks` is not a model call** and never should be — it renders on
+  every home view. It is TMDB discover filtered by the user's genres.

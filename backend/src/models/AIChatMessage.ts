@@ -2,7 +2,7 @@ import { Schema, model, type Types, type Model } from 'mongoose';
 
 /**
  * One turn of the AI advisor conversation. Stored per user so history survives
- * reloads, and so each request can replay recent turns to Claude as context.
+ * reloads, and so each request can replay recent turns to the model as context.
  *
  * `suggestions` holds the follow-up chips the UI shows under an assistant
  * message; they're derived once at generation time rather than recomputed.

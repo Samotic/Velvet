@@ -25,7 +25,7 @@ import { WatchStats } from './WatchStats';
  * The discovery feed.
  *
  * Each section fetches independently so a slow or unconfigured one (AI picks
- * without an Anthropic key, activity with nobody followed) degrades on its own
+ * without an advisor key, activity with nobody followed) degrades on its own
  * instead of holding up the page.
  */
 export function HomeScreen() {

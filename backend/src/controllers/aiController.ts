@@ -5,21 +5,22 @@ import { AIChatMessage } from '../models/AIChatMessage';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
 import {
+  AiBlockedError,
   AiNotConfiguredError,
   askAdvisor,
   extractTitles,
   followUps,
   type TasteProfile,
-} from '../services/claude';
+} from '../lib/ai';
 import * as tmdb from '../services/tmdb';
 import { recentTitles, topRatedTitles, userStats } from '../services/stats';
 import { fail, ok } from '../utils/http';
-import { str } from '../utils/validation';
+import { clean, str } from '../utils/validation';
 
 /**
  * The AI advisor.
  *
- * One user message costs one Claude call, which is what the daily quota counts.
+ * One user message costs one model call, which is what the daily quota counts.
  * Follow-up chips are derived locally for the same reason.
  */
 
@@ -92,7 +93,7 @@ async function tasteProfile(userId: string): Promise<TasteProfile | null> {
 /* ------------------------------ title links ------------------------------ */
 
 /**
- * Rewrites the `[[Title]]` markers Claude emits into `[[Title|type|id]]`, so
+ * Rewrites the `[[Title]]` markers the advisor emits into `[[Title|type|id]]`, so
  * the client can turn each recommendation into a link to its detail page.
  *
  * Resolution is a catalogue search per distinct title, run in parallel and
@@ -134,7 +135,7 @@ async function linkTitles(text: string): Promise<string> {
 export async function chat(req: Request, res: Response): Promise<Response> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const message = str(body.message).slice(0, 2000);
+    const message = clean(body.message, 2000);
     if (!message) return fail(res, 'Ask me something first', 422);
 
     const userId = req.user!.userId;
@@ -183,6 +184,15 @@ export async function chat(req: Request, res: Response): Promise<Response> {
     return ok(res, { message: saved.toJSON(), remaining: quota.remaining });
   } catch (err) {
     if (err instanceof AiNotConfiguredError) return fail(res, err.message, 503);
+
+    // A refusal is an outcome, not a fault. Gemini's filters can fire on the
+    // ordinary subject matter of a film app, and the user is owed a sentence
+    // that says what happened rather than a generic failure.
+    if (err instanceof AiBlockedError) {
+      console.warn(`ai chat blocked (${err.reason})`);
+      return fail(res, `AI_BLOCKED: ${err.message}`, 422);
+    }
+
     console.error('ai chat error:', err);
     return fail(res, 'The advisor could not reply just now', 502);
   }
@@ -206,7 +216,7 @@ export async function history(req: Request, res: Response): Promise<Response> {
 /**
  * GET /api/ai/picks — the weekly rail on the home screen.
  *
- * Deliberately *not* a Claude call: this loads on every home render, and
+ * Deliberately *not* a model call: this loads on every home render, and
  * spending a model call (and a message of the user's quota) on a page view
  * would be both slow and unfair. The picks come from the catalogue filtered by
  * the user's declared genres, with the reason drawn from why it matched.

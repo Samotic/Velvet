@@ -30,7 +30,11 @@ process.env.SUPPORTS_TRANSACTIONS = 'false';
 process.env.RESEND_API_KEY = '';
 process.env.GOOGLE_CLIENT_ID = '';
 process.env.GOOGLE_CLIENT_SECRET = '';
+// Both advisor providers, not just the selected one: a verify run must never
+// reach a real model. Leaving GEMINI_API_KEY set made `verify:api` spend money
+// on a live call and turned "AI answers 503 without a key" into a 200.
 process.env.ANTHROPIC_API_KEY = '';
+process.env.GEMINI_API_KEY = '';
 process.env.TMDB_READ_TOKEN = '';
 process.env.TMDB_API_KEY = '';
 process.env.IGDB_CLIENT_ID = '';

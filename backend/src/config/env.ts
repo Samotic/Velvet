@@ -51,6 +51,30 @@ export const env = {
   igdbClientSecret: process.env.IGDB_CLIENT_SECRET ?? '',
 
   /* --- AI advisor --- */
+  /**
+   * Which provider backs the advisor. Both implementations live behind
+   * `AIProvider` in src/lib/ai, so this is the only thing that chooses.
+   *
+   * Anything other than 'anthropic' resolves to Gemini — an unset or
+   * misspelled value lands on the supported provider rather than silently
+   * falling back to the one being retired.
+   */
+  aiProvider: process.env.AI_PROVIDER === 'anthropic' ? 'anthropic' : 'gemini',
+
+  /* Gemini — the current provider. */
+  geminiApiKey: process.env.GEMINI_API_KEY ?? '',
+  /**
+   * Pinned, never a `-latest` alias: an alias moves the model under a running
+   * deployment and the first sign is changed answers.
+   *
+   * 3.6 rather than the newer 3.7: measured on this project, 3.7-flash returned
+   * 503 "experiencing high demand" on most calls and needed retries to land at
+   * all, while 3.6-flash answered every call first time. 3.7 is faster when it
+   * responds — revisit the pin once its capacity settles.
+   */
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+
+  /* Anthropic — retained behind the flag until the migration is signed off. */
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
   /* The spec names claude-sonnet-4-6. Overridable so the model can move
      without a code change — claude-sonnet-5 is the newer Sonnet. */
@@ -99,7 +123,11 @@ export const isTest = env.nodeEnv === 'test';
 export const configured = {
   tmdb: () => Boolean(env.tmdbReadToken || env.tmdbApiKey),
   igdb: () => Boolean(env.igdbClientId && env.igdbClientSecret),
-  ai: () => Boolean(env.anthropicApiKey),
+  /* Readiness of whichever provider is selected — the advisor's 503 has to
+     describe the provider actually in use, not the one that happens to have a
+     key lying around. */
+  ai: () =>
+    env.aiProvider === 'anthropic' ? Boolean(env.anthropicApiKey) : Boolean(env.geminiApiKey),
   cloudinary: () =>
     Boolean(env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret),
   google: () => Boolean(env.googleClientId && env.googleClientSecret),

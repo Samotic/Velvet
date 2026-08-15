@@ -38,7 +38,7 @@ export function AiPicks() {
       .then(setPicks)
       .catch((err) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // 503 is the backend saying the Anthropic key is missing — a setup
+        // 503 is the backend saying the advisor key is missing — a setup
         // problem, not a failure, and worth wording differently.
         setProblem(err instanceof ApiError && err.status === 503 ? 'unconfigured' : 'failed');
         setPicks([]);
@@ -95,7 +95,7 @@ export function AiPicks() {
           <EmptyState
             icon="✦"
             title="Advisor not configured"
-            text="Add an ANTHROPIC_API_KEY to the API and Velvet's advisor comes online — weekly picks, and a chat that knows your taste."
+            text="Add a Gemini API key to the API and Velvet's advisor comes online — weekly picks, and a chat that knows your taste."
             action={{ label: 'Open the advisor', href: '/ai' }}
           />
         ) : user && user.favouriteGenres.length === 0 ? (

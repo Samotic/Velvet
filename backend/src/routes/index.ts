@@ -75,9 +75,9 @@ router.delete('/watchlist/:id', requireAuth, watchlist.remove);
 
 /* ---------------------------------- AI ------------------------------------ */
 
-// Importing the AI controller pulls in the Anthropic SDK, which is safe with
+// Importing the AI controller pulls in the Gemini SDK, which is safe with
 // no key set: the client is constructed lazily on first use, so a server
-// without ANTHROPIC_API_KEY still boots and these routes answer 503.
+// without GEMINI_API_KEY still boots and these routes answer 503.
 // The advisor is gated on a verified address: it costs real money per call and
 // is the obvious thing to point a throwaway signup at. `picks` is exempt — it
 // is a TMDB query with no model call behind it, and it renders on the home

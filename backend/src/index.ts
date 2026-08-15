@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 
 import { createApp } from './app';
 import { configured, env, isProd } from './config/env';
+import { activeProvider } from './lib/ai';
 import { connectDb } from './lib/db';
 import { initSocket } from './lib/socket';
 
@@ -45,7 +46,9 @@ async function main() {
       `  ${[
         status('TMDB', configured.tmdb()),
         status('IGDB', configured.igdb()),
-        status('Claude', configured.ai()),
+        // Named for whichever provider the flag selected, so a boot line never
+        // claims the advisor is live on a key the active provider cannot use.
+        status(activeProvider === 'gemini' ? 'Gemini' : 'Claude', configured.ai()),
         status('Cloudinary', configured.cloudinary()),
         status('Google', configured.google()),
         status('Email', configured.email()),
