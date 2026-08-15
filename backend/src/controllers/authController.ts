@@ -17,6 +17,7 @@ import {
   escapeRegex,
   isEmail,
   isGender,
+  clean,
   isMood,
   isNonEmptyString,
   isUsername,
@@ -80,7 +81,7 @@ export async function register(req: Request, res: Response): Promise<Response> {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
     const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
+    const displayName = clean(body.displayName, 60);
     const password = typeof body.password === 'string' ? body.password : '';
 
     // ---- validation (matches the frontend rules) ----
@@ -338,7 +339,7 @@ export async function completeOnboarding(req: Request, res: Response): Promise<R
 export async function onboardingProfile(req: Request, res: Response): Promise<Response> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const displayName = str(body.displayName).trim();
+    const displayName = clean(body.displayName, 60);
     const username = str(body.username).trim();
 
     if (!isNonEmptyString(displayName)) return fail(res, 'Display name is required', 422);

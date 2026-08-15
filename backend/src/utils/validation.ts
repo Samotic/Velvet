@@ -88,3 +88,90 @@ export function str(v: unknown): string {
   if (Array.isArray(v) && typeof v[0] === 'string') return v[0].trim();
   return '';
 }
+
+/* ------------------------- user-authored free text ------------------------ */
+
+/**
+ * Everything a user types that another user will read goes through here:
+ * reviews, review replies, messages, advisor prompts, bios, display names.
+ *
+ * ── Why, given React already escapes ──
+ * It does, and there is no `dangerouslySetInnerHTML` anywhere in the app, so a
+ * stored `<script>` cannot execute in the current client. That is one renderer's
+ * behaviour, not a property of the data. The moment this text reaches something
+ * that is not React — an email body, an export, a future native client, a
+ * webhook — the escaping is gone and the payload is live. Storing it clean means
+ * the safety travels with the data instead of depending on the reader.
+ *
+ * ── What it does, in order ──
+ * Order matters. Tags are removed only after script/style bodies are gone, or
+ * `<script>alert(1)</script>` would shed its tags and leave `alert(1)` sitting
+ * in the text as though the user had typed it.
+ */
+
+/** C0/C1 controls, minus the whitespace people legitimately type. */
+const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
+/** Zero-width and bidi-override characters — invisible, and used for spoofing. */
+const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
+
+/**
+ * Elements whose *content* is dangerous, not just their tags. Matched with an
+ * optional closing tag so an unterminated `<script>foo` is caught too.
+ */
+const ACTIVE_ELEMENTS = /<(script|style|iframe|object|embed|template|noscript)\b[\s\S]*?(?:<\/\s*\1\s*>|$)/gi;
+
+/** Any remaining tag, including malformed ones. Inner text is kept. */
+const HTML_TAG = /<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]*)?>/g;
+
+/** HTML comments, which can hide conditional-comment payloads. */
+const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
+
+/** URI schemes that execute. `data:` is included for `data:text/html`. */
+const ACTIVE_URI = /\b(?:javascript|vbscript|livescript|mocha|data)\s*:/gi;
+
+/** Inline event handlers, in case a tag was written without angle brackets. */
+const INLINE_HANDLER = /\bon[a-z]{3,}\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi;
+
+/** More than two consecutive newlines is layout abuse, not paragraphing. */
+const EXCESS_NEWLINES = /\n{3,}/g;
+
+export interface SanitizedText {
+  /** Safe to store and to render anywhere, escaped or not. */
+  text: string;
+  /** True when sanitising actually removed something. */
+  modified: boolean;
+}
+
+/**
+ * Strips markup and active content from a user-supplied string.
+ *
+ * Deliberately *strips* rather than escapes. Escaping here would double-encode:
+ * React escapes again at render, so a stored `&lt;b&gt;` shows the user the
+ * literal `<b>` they never meant to publish.
+ *
+ * Angle brackets that are not part of a tag survive — "a < b" and "I <3 this"
+ * are things people write in reviews, and rejecting them would be a worse bug
+ * than the one being prevented.
+ */
+export function sanitizeText(v: unknown, maxLength = 5000): SanitizedText {
+  const raw = str(v);
+  if (!raw) return { text: '', modified: false };
+
+  const text = raw
+    .replace(CONTROL_CHARS, '')
+    .replace(INVISIBLE, '')
+    .replace(HTML_COMMENT, '')
+    .replace(ACTIVE_ELEMENTS, '')
+    .replace(HTML_TAG, '')
+    .replace(INLINE_HANDLER, '')
+    .replace(ACTIVE_URI, '')
+    .replace(EXCESS_NEWLINES, '\n\n')
+    .trim()
+    .slice(0, maxLength);
+
+  return { text, modified: text !== raw.slice(0, maxLength) };
+}
+
+/** The common case: just the cleaned string. */
+export const clean = (v: unknown, maxLength = 5000): string => sanitizeText(v, maxLength).text;

@@ -10,7 +10,7 @@ import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
 import { areMutual, relationBetween } from '../services/social';
 import { publicProfile, userRef } from '../utils/serialize';
-import { isObjectId, str } from '../utils/validation';
+import { clean, isObjectId, str } from '../utils/validation';
 
 /**
  * Text-only direct messaging. No media, no calls.
@@ -167,7 +167,7 @@ export async function send(req: Request, res: Response): Promise<Response> {
     const me = req.user!.userId;
     if (otherId === me) return fail(res, 'You cannot message yourself', 422);
 
-    const text = str((req.body ?? {}).text).slice(0, 2000);
+    const text = clean((req.body ?? {}).text, 2000);
     if (!text) return fail(res, 'Write something first', 422);
 
     const other = await User.findById(otherId).select('_id');

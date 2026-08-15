@@ -27,6 +27,7 @@ import { notify } from '../utils/notify';
 import { publicProfile } from '../utils/serialize';
 import {
   cleanGenres,
+  clean,
   escapeRegex,
   isContentType,
   isGender,
@@ -68,12 +69,14 @@ export async function updateMe(req: Request, res: Response): Promise<Response> {
     const patch: Record<string, unknown> = {};
 
     if (typeof body.displayName === 'string') {
-      const name = body.displayName.trim();
+      // Sanitised, so a name made entirely of markup comes back empty and is
+      // refused here rather than being stored as a blank byline.
+      const name = clean(body.displayName, 60);
       if (!name) return fail(res, 'Display name cannot be empty', 422);
       patch.displayName = name;
     }
     // A bio can legitimately be cleared, so an empty string is a real value.
-    if (typeof body.bio === 'string') patch.bio = body.bio.trim().slice(0, 160);
+    if (typeof body.bio === 'string') patch.bio = clean(body.bio, 160);
     if (body.age !== undefined) {
       if (!isValidAge(body.age)) return fail(res, 'Age must be 13 or over', 422);
       patch.age = body.age;

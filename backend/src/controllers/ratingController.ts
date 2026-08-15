@@ -10,7 +10,7 @@ import { userStats } from '../services/stats';
 import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
 import { distribution, review as toReview } from '../utils/serialize';
-import { isContentType, isObjectId, isRatingValue, str } from '../utils/validation';
+import { clean, isContentType, isObjectId, isRatingValue, str } from '../utils/validation';
 
 /**
  * Ratings and reviews.
@@ -44,7 +44,7 @@ export async function upsert(req: Request, res: Response): Promise<Response> {
           contentTitle: str(body.contentTitle),
           poster: typeof body.poster === 'string' ? body.poster : null,
           rating,
-          review: str(body.review).slice(0, 5000),
+          review: clean(body.review, 5000),
           runtimeMinutes: typeof body.runtimeMinutes === 'number' ? body.runtimeMinutes : null,
           genres: Array.isArray(body.genres)
             ? body.genres.filter((g): g is string => typeof g === 'string')
@@ -280,7 +280,7 @@ export async function reply(req: Request, res: Response): Promise<Response> {
     const id = req.params.id;
     if (!isObjectId(id)) return fail(res, 'Review not found', 404);
 
-    const text = str((req.body ?? {}).text).slice(0, 1000);
+    const text = clean((req.body ?? {}).text, 1000);
     if (!text) return fail(res, 'Write something first', 422);
 
     const doc = await Rating.findByIdAndUpdate(
