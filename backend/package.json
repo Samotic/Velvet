@@ -2,7 +2,7 @@
   "name": "velvet-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Velvet API \u2014 auth, catalog, social (Express + MongoDB)",
+  "description": "Velvet API — auth, catalog, social (Express + MongoDB)",
   "engines": {
     "node": ">=22 <25"
   },
@@ -46,5 +46,8 @@
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
   }
 }
