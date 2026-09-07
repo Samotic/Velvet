@@ -113,7 +113,11 @@ async function maybeEmail(opts: {
 
     if (!recipient?.emailVerified || !sender) return;
 
-    if (opts.type === 'follow') {
+    // Both follow types, not just the deprecated one. `emailable` above has
+    // always admitted `new_follower`, but this branch only caught `follow` —
+    // so every real new-follower notification fell through to the message
+    // email below and told the recipient they had been sent a message.
+    if (opts.type === 'follow' || opts.type === 'new_follower') {
       await sendNewFollowerEmail({
         to: recipient.email,
         followerName: sender.displayName,
