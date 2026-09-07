@@ -7,6 +7,7 @@ import { computeNeighborsForUser, needsRecompute } from '../lib/cf/neighbors';
 import { recomputeUserStats } from '../lib/cf/stats';
 import { viewerId } from '../middleware/auth';
 import { userStats } from '../services/stats';
+import { checkViewById, PRIVATE_MESSAGE } from '../services/visibility';
 import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
 import { distribution, review as toReview } from '../utils/serialize';
@@ -179,6 +180,18 @@ export async function byUser(req: Request, res: Response): Promise<Response> {
   try {
     const { userId } = req.params;
     if (!isObjectId(userId)) return fail(res, 'User not found', 404);
+
+    /**
+     * The one that mattered most. This endpoint took a user id off the URL and
+     * returned up to 200 of their ratings and reviews to anyone at all, signed
+     * in or not — a private account's entire viewing history, one request away.
+     */
+    const view = await checkViewById(viewerId(req), userId);
+    if (!view.ok) {
+      return view.reason === 'private'
+        ? fail(res, PRIVATE_MESSAGE, 403)
+        : fail(res, 'User not found', 404);
+    }
 
     const rows = await Rating.find({ userId })
       .sort({ createdAt: -1 })

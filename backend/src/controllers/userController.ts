@@ -23,9 +23,10 @@ import {
   unblockUser,
 } from '../services/social';
 import { consume } from '../services/rateLimit';
+import { canViewContent, checkViewById, PRIVATE_MESSAGE } from '../services/visibility';
 import { Follow, type FollowStatus } from '../models/Follow';
 import { fail, ok } from '../utils/http';
-import { publicProfile } from '../utils/serialize';
+import { publicProfile, restrictedProfile } from '../utils/serialize';
 import {
   cleanGenres,
   clean,
@@ -49,12 +50,22 @@ export async function getByUsername(req: Request, res: Response): Promise<Respon
     }).lean();
     if (!user) return fail(res, 'User not found', 404);
 
+    const viewer = viewerId(req);
+    const rel = await relationBetween(viewer, String(user._id));
+
+    /**
+     * A private account still has a findable profile — you cannot ask to
+     * follow someone you cannot reach — but a non-follower gets the shell
+     * only. The count query is skipped rather than computed and discarded:
+     * `filmCount` is one of the fields being withheld.
+     */
+    if (!(await canViewContent(viewer, user))) {
+      return ok(res, { user: restrictedProfile(user, viewer, rel) });
+    }
+
     // "Films" on a profile means titles they've rated — rating is what marks
     // something watched in this schema.
     const filmCount = await Rating.countDocuments({ userId: user._id });
-
-    const viewer = viewerId(req);
-    const rel = await relationBetween(viewer, String(user._id));
 
     return ok(res, { user: publicProfile(user, viewer, filmCount, rel) });
   } catch (err) {
@@ -442,8 +453,17 @@ async function listSide(req: Request, res: Response, side: 'followers' | 'follow
     const id = req.params.id;
     if (!isObjectId(id)) return fail(res, 'User not found', 404);
 
-    const owner = await User.findById(id).select('_id').lean();
+    const owner = await User.findById(id).select('_id profileVisibility').lean();
     if (!owner) return fail(res, 'User not found', 404);
+
+    /**
+     * A private account's social graph is content too. Who someone follows is
+     * often more revealing than what they have rated, and it was the one list
+     * a stranger could page through 200 at a time.
+     */
+    if (!(await canViewContent(viewerId(req), owner))) {
+      return fail(res, PRIVATE_MESSAGE, 403);
+    }
 
     // "followers" = edges pointing at the owner; "following" = edges from them.
     const edges = await Follow.find(

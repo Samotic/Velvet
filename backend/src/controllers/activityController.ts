@@ -4,7 +4,9 @@ import { Follow } from '../models/Follow';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
 import { WatchlistItem } from '../models/WatchlistItem';
+import { viewerId } from '../middleware/auth';
 import { userStats } from '../services/stats';
+import { checkViewById, PRIVATE_MESSAGE } from '../services/visibility';
 import { fail, ok } from '../utils/http';
 import { userRef, type UserRef } from '../utils/serialize';
 import { isObjectId } from '../utils/validation';
@@ -114,6 +116,18 @@ export async function forUser(req: Request, res: Response): Promise<Response> {
     const { userId } = req.params;
     if (!isObjectId(userId)) return fail(res, 'User not found', 404);
 
+    /**
+     * The same gate as the ratings list, and arguably the one that matters
+     * most: activity is not only what someone has watched but when, which is
+     * the closest thing here to a live record of a person's evenings.
+     */
+    const view = await checkViewById(viewerId(req), userId);
+    if (!view.ok) {
+      return view.reason === 'private'
+        ? fail(res, PRIVATE_MESSAGE, 403)
+        : fail(res, 'User not found', 404);
+    }
+
     return ok(res, { items: await itemsFor([userId], 20) });
   } catch (err) {
     console.error('user activity error:', err);
@@ -126,6 +140,15 @@ export async function statsForUser(req: Request, res: Response): Promise<Respons
   try {
     const { userId } = req.params;
     if (!isObjectId(userId)) return fail(res, 'User not found', 404);
+
+    // Aggregate figures are still content: hours watched and a genre
+    // breakdown describe the person as surely as the titles behind them.
+    const view = await checkViewById(viewerId(req), userId);
+    if (!view.ok) {
+      return view.reason === 'private'
+        ? fail(res, PRIVATE_MESSAGE, 403)
+        : fail(res, 'User not found', 404);
+    }
 
     const s = await userStats(userId);
     return ok(res, { ...s, averageRating: s.avgRating });

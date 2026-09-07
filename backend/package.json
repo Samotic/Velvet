@@ -17,7 +17,8 @@
     "verify:follow": "tsx scripts/verify-follow-requests.ts",
     "verify:ai": "tsx scripts/verify-ai.ts",
     "verify:account": "tsx scripts/verifyAccount.ts",
-    "verify:messages": "tsx scripts/verify-message-edit-delete.ts"
+    "verify:messages": "tsx scripts/verify-message-edit-delete.ts",
+    "verify:privacy": "tsx scripts/verify-privacy.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

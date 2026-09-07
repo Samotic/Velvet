@@ -170,6 +170,46 @@ export function publicProfile(
   };
 }
 
+/**
+ * A private account seen by someone who may not read it.
+ *
+ * Built by **removing** from `publicProfile` rather than by listing what to
+ * keep. A field added to the profile later is then hidden here by default and
+ * has to be deliberately allowed through — the opposite way round, every new
+ * field silently leaks until someone remembers this function exists.
+ *
+ * The shell survives on purpose: name, avatar, counts and the whole
+ * relationship block. You have to be able to find a private account and ask to
+ * follow it, and the Follow button needs every one of those flags to know
+ * which of its three states to show. What goes is everything that is *about*
+ * them rather than *who* they are — bio, age, gender, taste, pinned films, and
+ * how much they have watched.
+ */
+const RESTRICTED_FIELDS = [
+  'bio',
+  'age',
+  'gender',
+  'favouriteGenres',
+  'favouriteMood',
+  'pinnedFilms',
+  'filmCount',
+] as const;
+
+export function restrictedProfile(
+  u: WithId<IUser>,
+  viewerId: string | null,
+  rel: ViewerRelation = NO_RELATION,
+): Record<string, unknown> {
+  // filmCount is passed as 0 and then removed — the caller must not have to
+  // compute a figure that is about to be dropped.
+  const full = publicProfile(u, viewerId, 0, rel);
+  for (const field of RESTRICTED_FIELDS) delete full[field];
+
+  /** Tells the client to render the locked state rather than an empty profile. */
+  full.restricted = true;
+  return full;
+}
+
 /* -------------------------------- reviews -------------------------------- */
 
 /**
