@@ -52,6 +52,15 @@ export interface INotification {
   read: boolean;
   /** The Follow edge this refers to, for resolving Accept / Decline. */
   followId: Types.ObjectId | null;
+  /**
+   * The Message this refers to. `message` type only, null on every other.
+   *
+   * Exists so a retraction can find and remove the card it raised: without it
+   * the only handles are the sender and a timestamp, and deleting "the newest
+   * message notification from this person" would take down the wrong card
+   * whenever two messages arrived close together.
+   */
+  messageId: Types.ObjectId | null;
   /** `follow_request` only. Null on every other type. */
   actionState: ActionState | null;
   createdAt: Date;
@@ -67,6 +76,7 @@ const notificationSchema = new Schema<INotification>(
     contentTitle: { type: String, default: null },
     read: { type: Boolean, default: false },
     followId: { type: Schema.Types.ObjectId, ref: 'Follow', default: null },
+    messageId: { type: Schema.Types.ObjectId, ref: 'Message', default: null },
     actionState: { type: String, enum: ACTION_STATES, default: null },
   },
   {
@@ -87,6 +97,9 @@ notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
 
 /** Cursor pagination: newest first for one recipient. */
 notificationSchema.index({ userId: 1, createdAt: -1 });
+
+/** Sparse: only `message` rows carry one. Used to retract a card on delete. */
+notificationSchema.index({ messageId: 1 }, { sparse: true });
 
 /**
  * Dedupe. Sparse because only follow notifications carry a `followId`, and a

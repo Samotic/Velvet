@@ -41,8 +41,16 @@ router.get('/igdb/game/:id', catalog.gameDetail);
 router.get('/users/search', optionalAuth, users.search);
 router.put('/users/me', requireAuth, users.updateMe);
 router.post('/users/me/photo', requireAuth, users.uploadPhoto);
+// The pending queue. Two segments, so it cannot collide with `/users/:username`.
+router.get('/users/me/follow-requests', requireAuth, users.followRequests);
 router.get('/users/:id/followers', optionalAuth, users.followers);
 router.get('/users/:id/following', optionalAuth, users.following);
+// Asking, answering and undoing. `:id` is the *other* person in every case —
+// on accept and decline it names the requester, never the caller.
+router.post('/users/:id/follow-request', requireAuth, users.followRequest);
+router.post('/users/:id/accept-follow', requireAuth, users.acceptFollow);
+router.post('/users/:id/decline-follow', requireAuth, users.declineFollow);
+// Predates the approval flow; still creates a request, and answers `pending`.
 router.post('/users/:id/follow', requireAuth, users.follow);
 router.delete('/users/:id/follow', requireAuth, users.unfollow);
 router.post('/users/:id/block', requireAuth, users.block);
@@ -96,6 +104,14 @@ router.get('/messages/unread-count', requireAuth, messages.unreadCount);
 router.get('/messages/:userId', requireAuth, requireVerified, messages.thread);
 router.post('/messages/:userId/send', requireAuth, requireVerified, messages.send);
 router.put('/messages/:userId/read', requireAuth, requireVerified, messages.markRead);
+
+/**
+ * Edit and delete are addressed by **message** id, not by the other person's.
+ * No conflict with `/messages/:userId` above: that one is a GET, and these two
+ * are the only PATCH and DELETE on the path.
+ */
+router.patch('/messages/:messageId', requireAuth, requireVerified, messages.edit);
+router.delete('/messages/:messageId', requireAuth, requireVerified, messages.remove);
 
 /* ----------------------------- notifications ------------------------------ */
 

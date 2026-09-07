@@ -157,6 +157,22 @@ export const Camera = (p: IconProps) => (
   </svg>
 );
 
+/** The composer's record button. */
+export const Mic = (p: IconProps) => (
+  <svg {...line} {...p}>
+    <rect x="9" y="2" width="6" height="12" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0" />
+    <path d="M12 18v4" />
+  </svg>
+);
+
+/** Stops a recording, and pauses voice-note playback. */
+export const Stop = (p: IconProps) => (
+  <svg {...line} {...p}>
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+  </svg>
+);
+
 export const Logout = (p: IconProps) => (
   <svg {...line} {...p}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -176,6 +192,13 @@ export const Filter = (p: IconProps) => (
 export const PlayFilled = ({ size = 18, className }: SizedProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
     <path d="M5 3l16 9-16 9z" />
+  </svg>
+);
+
+/** The other half of the voice-note transport control. */
+export const PauseFilled = ({ size = 18, className }: SizedProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path d="M6 4h4v16H6zM14 4h4v16h-4z" />
   </svg>
 );
 

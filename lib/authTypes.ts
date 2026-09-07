@@ -42,11 +42,12 @@ export interface AuthUser {
   favouriteGenres: string[];
   favouriteMood?: Mood;
   pinnedFilms: PinnedFilm[];
-  /** @deprecated The graph lives in the `follows` collection now. */
+  /** Confirmed follows only. Pending requests never grant access. */
   following: string[];
-  /** @deprecated See `following`. */
+  /** Confirmed followers only. */
   followers: string[];
-  /** Whether new follows need approval. Toggled in settings. */
+  followRequests: { from: string; createdAt: string }[];
+  /** Visibility of profile activity; all follows require approval. */
   profileVisibility: 'public' | 'private';
   /** Denormalized, accepted edges only — never counts a pending request. */
   followerCount: number;
@@ -97,8 +98,15 @@ export interface PublicProfile {
    * messaging — see the note on `isMutual` in the API's messageController.
    */
   isFollowedBy: boolean;
+  /**
+   * They have asked to follow you and are waiting on an answer. The profile
+   * shows Accept and Decline inline when this is true.
+   */
+  requestedYou: boolean;
   /** True when this is the signed-in user's own profile. */
   isMe: boolean;
+  /** Only included when viewing your own profile. */
+  pendingRequestCount?: number;
   createdAt: string;
 }
 
@@ -154,6 +162,6 @@ export interface ProfileUpdateInput {
   favouriteMood?: Mood;
   profilePhoto?: string | null;
   pinnedFilms?: PinnedFilm[];
-  /** The privacy toggle. Governs future follows only. */
+  /** The privacy toggle controls access to profile activity. */
   profileVisibility?: 'public' | 'private';
 }

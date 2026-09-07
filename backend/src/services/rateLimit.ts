@@ -56,3 +56,34 @@ export async function consume(
 
   return { ok: true };
 }
+
+/**
+ * Hands a consumed unit back.
+ *
+ * Only for work that provably never happened — an upload refused because the
+ * server has no Cloudinary credentials never reached Cloudinary, so charging
+ * for it turns a misconfigured deployment into a rate-limited one and replaces
+ * an honest 503 with a misleading 429.
+ *
+ * A genuine upload failure is **not** refunded: that request did reach the
+ * provider and cost what the limit exists to bound.
+ *
+ * `count: { $gt: 0 }` guards the case where the window rolled between the
+ * consume and the refund, so a stray decrement cannot drive a fresh window
+ * negative and hand out free requests.
+ */
+export async function refund(
+  userId: string,
+  action: string,
+  windows: LimitWindow[] = FOLLOW_LIMITS,
+): Promise<void> {
+  const now = Date.now();
+  for (const w of windows) {
+    const ms = w.seconds * 1000;
+    const windowStart = Math.floor(now / ms) * ms;
+    await RateLimit.updateOne(
+      { key: `${userId}:${action}:${windowStart}`, count: { $gt: 0 } },
+      { $inc: { count: -1 } },
+    );
+  }
+}

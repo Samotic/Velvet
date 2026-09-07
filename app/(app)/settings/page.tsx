@@ -85,8 +85,8 @@ function Settings() {
               <div className="settings-toggle-label">Private account</div>
               <p className="settings-toggle-help">
                 {isPrivate
-                  ? 'New followers have to be approved. People already following you keep access.'
-                  : 'Anyone can follow you, and they see your ratings straight away.'}
+                  ? 'Only approved followers can see your ratings and activity. All new follows need your approval.'
+                  : 'Anyone can see your ratings and activity. All new follows still need your approval.'}
               </p>
             </div>
             <button

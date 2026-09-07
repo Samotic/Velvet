@@ -3,6 +3,9 @@
 import { api } from './api';
 import type { PublicProfile } from './authTypes';
 import type { Review, WatchlistItem, WatchStats } from './contentTypes';
+import { announceFollowChange } from './socialEvents';
+
+export { onFollowChange } from './socialEvents';
 
 /** Public profiles, follows and follower lists. */
 
@@ -24,28 +27,32 @@ export function getFollowing(userId: string, signal?: AbortSignal): Promise<Publ
     .then((r) => r.users);
 }
 
-/** What pressing Follow produced. `pending` means the target is private. */
+/** Only an approved request is an accepted follow. */
 export type FollowStatus = 'accepted' | 'pending';
 
 /**
- * Follows, or requests to. The result decides the button's next label:
+ * Sends an approval request. The result decides the button's next label:
  * `accepted` → "Following", `pending` → "Requested".
  *
  * Idempotent server-side, so a double-tap resolves to the same state rather
  * than erroring.
  */
 export function followUser(userId: string): Promise<FollowStatus> {
-  return api.post<{ status: FollowStatus }>(`/api/users/${userId}/follow`).then((r) => r.status);
+  return api.post<{ status: 'requested' | 'following' }>(`/api/users/${userId}/follow-request`)
+    .then((r) => {
+      announceFollowChange();
+      return r.status === 'following' ? 'accepted' : 'pending';
+    });
 }
 
 /** Unfollow, or withdraw a pending request — the same call either way. */
 export function unfollowUser(userId: string): Promise<void> {
-  return api.del(`/api/users/${userId}/follow`).then(() => undefined);
+  return api.del(`/api/users/${userId}/follow`).then(() => announceFollowChange());
 }
 
 /** Severs the relationship in both directions and hides each from the other. */
 export function blockUser(userId: string): Promise<void> {
-  return api.post(`/api/users/${userId}/block`).then(() => undefined);
+  return api.post(`/api/users/${userId}/block`).then(() => announceFollowChange());
 }
 
 export function unblockUser(userId: string): Promise<void> {

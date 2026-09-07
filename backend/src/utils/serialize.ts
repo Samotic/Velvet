@@ -53,6 +53,53 @@ export function userRef(u: unknown): UserRef | null {
 }
 
 /**
+ * A notification in the shape the client actually reads.
+ *
+ * **Both the list endpoint and the socket push go through here.** They used to
+ * disagree: the list mapped `fromUserId` to `from`/`actor` and `followId` to
+ * `followRequestId`, while the socket emitted the raw document. The
+ * notifications page prepends a pushed row verbatim, so a request that arrived
+ * live rendered as "Someone wants to follow you" with no avatar and no
+ * Accept/Decline until the page was reloaded.
+ *
+ * Pass a `.lean()` row or a `.toObject()` document, not `.toJSON()`: the User
+ * transform renames `_id` to `id` on the populated actor, and `userRef` reads
+ * `_id`.
+ */
+export function notificationPayload(
+  n: Record<string, unknown> | Record<string, never> | object,
+  opts: { ratingCount?: number; viewerFollows?: 'pending' | 'accepted' | null } = {},
+): Record<string, unknown> {
+  const row = n as Record<string, unknown>;
+  const actor = userRef(row.fromUserId);
+  const ratingCount = opts.ratingCount ?? 0;
+  return {
+    id: String(row._id ?? row.id ?? ''),
+    type: row.type,
+    /** Kept as `from` — the existing UI reads that name. */
+    from: actor,
+    actor: actor ? { ...actor, ratingCount } : null,
+    contentId: row.contentId ?? null,
+    contentType: row.contentType ?? null,
+    contentTitle: row.contentTitle ?? null,
+    read: Boolean(row.read),
+    state: row.read ? 'read' : 'unread',
+    actionState: row.actionState ?? null,
+    followRequestId: row.followId ? String(row.followId) : null,
+    /**
+     * Viewer-relative, and **false on a socket push**. Resolving the edge would
+     * put a query on the emit path of every notification; the only card that
+     * reads these is Follow back on `new_follower`, which nothing creates now
+     * that approval is universal. False reads as "offer Follow", which is the
+     * safe way to be wrong — the opposite would claim a follow that isn't there.
+     */
+    viewerFollowsActor: opts.viewerFollows === 'accepted',
+    viewerRequestedActor: opts.viewerFollows === 'pending',
+    createdAt: row.createdAt,
+  };
+}
+
+/**
  * The viewer's relationship to the profile, in both directions.
  *
  * Passed in rather than derived here, because the edges live in the `follows`
@@ -75,7 +122,7 @@ export const NO_RELATION: ViewerRelation = { outgoing: null, incoming: null };
  * method on the model — the same document serialises differently per request.
  *
  * Counts read the denormalized fields, not array lengths: the arrays are
- * deprecated and, more to the point, a pending request must never be counted
+ * confirmed-only mirrors and a pending request must never be counted
  * as a follower.
  */
 export function publicProfile(
@@ -108,7 +155,17 @@ export function publicProfile(
     // The other direction, and not redundant: messaging requires the follow to
     // be mutual, so the UI needs both halves to know whether to offer it.
     isFollowedBy: rel.incoming === 'accepted',
+    /**
+     * They have asked to follow **you** and are waiting. Distinct from
+     * `isFollowedBy`, which is the settled version of the same direction.
+     *
+     * Without this the profile of someone who had requested you looked
+     * identical to a stranger's, and the only Accept in the product was behind
+     * the notification bell — which is not where people go looking for it.
+     */
+    requestedYou: rel.incoming === 'pending',
     isMe: viewerId === id,
+    ...(viewerId === id ? { pendingRequestCount: u.pendingRequestCount ?? 0 } : {}),
     createdAt: u.createdAt,
   };
 }

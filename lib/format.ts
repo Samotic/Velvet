@@ -86,5 +86,51 @@ export function messageGroupLabel(iso: string): string {
   return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
 }
 
+/**
+ * `HH:mm`, 24-hour, for the timestamp inside a message bubble.
+ *
+ * Deliberately not `toLocaleTimeString` with `hour12` left to the locale: the
+ * stamp sits inline at the end of the last line of a bubble, and "10:04 PM" is
+ * three characters wider than "22:04" — enough to force a wrap on a short final
+ * line. A fixed width keeps the bubble shape predictable.
+ */
+export function clockTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** True when both timestamps land on the same calendar day, locally. */
+export function sameCalendarDay(a: Date, b: Date): boolean {
+  return (
+    a.getDate() === b.getDate() &&
+    a.getMonth() === b.getMonth() &&
+    a.getFullYear() === b.getFullYear()
+  );
+}
+
+/**
+ * `Today` / `Yesterday` / `MMM D` — the centred divider between groups that
+ * cross a calendar day. Carries no time; the bubbles do that.
+ */
+export function dayDivider(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+
+  const today = new Date();
+  if (sameCalendarDay(d, today)) return 'Today';
+
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (sameCalendarDay(d, yesterday)) return 'Yesterday';
+
+  // The year only earns its space once it stops being the current one.
+  return d.getFullYear() === today.getFullYear()
+    ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 /** Five-star display used in review headers and activity rows. */
 export const stars = (n: number): string => '★'.repeat(n) + '☆'.repeat(Math.max(0, 5 - n));

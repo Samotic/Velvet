@@ -1,8 +1,11 @@
 import { Types } from 'mongoose';
 
+import { Conversation } from '../models/Conversation';
+import { Message } from '../models/Message';
 import { Notification, type NotificationType } from '../models/Notification';
 import { User, type ContentType } from '../models/User';
 import { emitToUser } from '../lib/socket';
+import { notificationPayload } from './serialize';
 import { sendNewFollowerEmail, sendNewMessageEmail } from '../services/email';
 
 /**
@@ -25,6 +28,12 @@ export async function notify(opts: {
   contentTitle?: string | null;
   /** The Follow edge, for the three follow types. Also the dedupe key. */
   followId?: Types.ObjectId | string | null;
+  /**
+   * The Message this is about. `type: 'message'` only. It is what lets a
+   * retraction find this card again, and what lets the email step check the
+   * message still stands before sending.
+   */
+  messageId?: Types.ObjectId | string | null;
   /** The message body, for the email preview. Only used by `type: 'message'`. */
   preview?: string | null;
 }): Promise<void> {
@@ -61,6 +70,7 @@ export async function notify(opts: {
           contentType: opts.contentType ?? null,
           contentTitle: opts.contentTitle ?? null,
           followId: opts.followId ?? null,
+          messageId: opts.messageId ?? null,
           actionState,
           read: false,
           createdAt: new Date(),
@@ -73,8 +83,10 @@ export async function notify(opts: {
     // notification passes through, so it cannot fall out of step.
     await User.updateOne({ _id: opts.userId }, { $inc: { unreadNotificationCount: 1 } });
 
+    // toObject(), not toJSON(): the User transform renames `_id` to `id` on the
+    // populated actor, and the serializer reads `_id`.
     const populated = await doc.populate('fromUserId', 'username displayName profilePhoto');
-    emitToUser(String(opts.userId), 'notification:new', populated.toJSON());
+    emitToUser(String(opts.userId), 'notification:new', notificationPayload(populated.toObject()));
 
     await maybeEmail(opts);
   } catch (err) {
@@ -96,6 +108,7 @@ async function maybeEmail(opts: {
   userId: Types.ObjectId | string;
   type: NotificationType;
   fromUserId?: Types.ObjectId | string | null;
+  messageId?: Types.ObjectId | string | null;
   preview?: string | null;
 }): Promise<void> {
   // `new_follower` replaced `follow`; both map to the same email. A
@@ -127,6 +140,21 @@ async function maybeEmail(opts: {
       return;
     }
 
+    /**
+     * Last look before the mail goes out.
+     *
+     * There is no queue to cancel a job in, so a message retracted seconds
+     * after it was sent is caught here instead: re-read the row and stop if it
+     * has become a tombstone. It narrows the window rather than closing it —
+     * a delete landing after this check but before Resend accepts the payload
+     * still mails — which is why the retraction also removes the in-app card
+     * rather than relying on this alone.
+     */
+    if (opts.type === 'message' && opts.messageId) {
+      const still = await Message.findById(opts.messageId).select('deletedForEveryone').lean();
+      if (!still || still.deletedForEveryone) return;
+    }
+
     await sendNewMessageEmail({
       to: recipient.email,
       fromName: sender.displayName,
@@ -135,5 +163,79 @@ async function maybeEmail(opts: {
     });
   } catch (err) {
     console.error('notify email error:', err);
+  }
+}
+
+/**
+ * Gives back one unread from a thread's per-reader counter.
+ *
+ * Exported because **both** delete paths need it and they need it to behave
+ * identically. A retraction goes through `retractMessage` below; a
+ * delete-for-me calls this directly, because hiding an unread message must
+ * also stop it counting — the badge query already filters `deletedFor`, so
+ * skipping this leaves `Conversation.unread` claiming a message the navbar
+ * has already stopped counting, and the inbox row shows a badge that opens
+ * onto nothing.
+ *
+ * The `$gt: 0` guard is the whole reason this is one function rather than two
+ * call sites: it is what makes a repeat harmless.
+ */
+export async function releaseThreadUnread(
+  conversationId: Types.ObjectId,
+  receiverId: Types.ObjectId | string,
+  wasUnread: boolean,
+): Promise<void> {
+  if (!wasUnread) return;
+  const key = `unread.${String(receiverId)}`;
+  await Conversation.updateOne(
+    { _id: conversationId, [key]: { $gt: 0 } },
+    { $inc: { [key]: -1 } },
+  );
+}
+
+/**
+ * Undoes everything a message caused, for when that message is retracted.
+ *
+ * **Both** unread counters are released from here, together, on purpose. A
+ * retracted message has to give back two separate denormalized counts — the
+ * thread's `Conversation.unread.<recipient>` and the badge's
+ * `User.unreadNotificationCount` — and they are decremented under the same
+ * condition by the same event. Split across two modules they would be two
+ * things to remember on the next change to this path; here, forgetting one is
+ * not possible. Both take the `$gt: 0` guard so a repeated retraction can
+ * never drive either negative.
+ *
+ * Never throws, for the same reason `notify` does not: cleanup failing must
+ * not fail the retraction that triggered it.
+ */
+export async function retractMessage(msg: {
+  _id: Types.ObjectId;
+  conversationId: Types.ObjectId;
+  receiverId: Types.ObjectId;
+  /** Whether the message was unread **before** it was retracted. */
+  wasUnread: boolean;
+}): Promise<void> {
+  try {
+    // 1. The thread's own counter, through the shared helper — delete-for-me
+    //    calls the same one, so the two paths cannot decrement differently.
+    await releaseThreadUnread(msg.conversationId, msg.receiverId, msg.wasUnread);
+
+    // 2. The card it raised, and the navbar badge that mirrors it.
+    const row = await Notification.findOneAndDelete({
+      messageId: msg._id,
+      type: 'message',
+    }).lean();
+    if (!row) return;
+
+    if (!row.read) {
+      await User.updateOne(
+        { _id: row.userId, unreadNotificationCount: { $gt: 0 } },
+        { $inc: { unreadNotificationCount: -1 } },
+      );
+    }
+
+    emitToUser(String(row.userId), 'notification:removed', { id: String(row._id) });
+  } catch (err) {
+    console.error('retractMessage error:', err);
   }
 }

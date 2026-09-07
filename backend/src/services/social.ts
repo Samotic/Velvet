@@ -1,150 +1,250 @@
 import mongoose, { Types, type ClientSession } from 'mongoose';
 
 import { env } from '../config/env';
+import { emitToUser } from '../lib/socket';
 import { Block } from '../models/Block';
-import { Follow, type FollowStatus } from '../models/Follow';
+import { Follow, type FollowStatus, type IFollow } from '../models/Follow';
+import { FollowRequest } from '../models/FollowRequest';
 import { Notification } from '../models/Notification';
 import { User } from '../models/User';
-import { NO_RELATION, type ViewerRelation } from '../utils/serialize';
-
-/**
- * The follow graph's write path. Every edge change goes through here, because
- * an edge and its counters must move together — a route that writes one and
- * forgets the other is how `followerCount` starts lying.
- */
+import { NO_RELATION, notificationPayload, type ViewerRelation } from '../utils/serialize';
 
 const oid = (id: string | Types.ObjectId) => new Types.ObjectId(String(id));
 
-/**
- * Runs `fn` inside a transaction where the deployment supports one.
- *
- * On standalone Mongo there are no transactions, so `fn` runs with a null
- * session and its writes land individually. That is a real weakening — a crash
- * between two writes leaves the counter out of step — and it is why
- * `reconcileCounters.ts` exists rather than being optional.
- */
+/** Serialize a pair's transitions on standalone Mongo too. Replica sets also
+ * use transactions, which protect the same writes across API processes. */
+const pairWrites = new Map<string, Promise<void>>();
+async function withPairWrite<T>(a: string, b: string, fn: () => Promise<T>): Promise<T> {
+  const key = [a.toLowerCase(), b.toLowerCase()].sort().join(':');
+  const previous = pairWrites.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  pairWrites.set(key, current);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (pairWrites.get(key) === current) pairWrites.delete(key);
+  }
+}
+
+/** Standalone deployments can repair interrupted writes with reconcileCounters. */
 export async function withTxn<T>(fn: (session: ClientSession | null) => Promise<T>): Promise<T> {
   if (!env.supportsTransactions) return fn(null);
-
   const session = await mongoose.startSession();
   try {
     let out!: T;
-    await session.withTransaction(async () => {
-      out = await fn(session);
-    });
+    await session.withTransaction(async () => { out = await fn(session); });
     return out;
   } finally {
     await session.endSession();
   }
 }
 
-/** Either direction. Blocking is mutual in effect even though the record isn't. */
-export async function isBlockedBetween(a: string, b: string): Promise<boolean> {
-  const found = await Block.findOne({
+export async function isBlockedBetween(a: string, b: string, session: ClientSession | null = null): Promise<boolean> {
+  return Boolean(await Block.findOne({
     $or: [
       { blockerId: oid(a), blockedId: oid(b) },
       { blockerId: oid(b), blockedId: oid(a) },
     ],
-  }).select('_id');
-  return Boolean(found);
+  }).select('_id').session(session));
 }
 
-export type FollowOutcome = {
-  status: FollowStatus;
-  /** True only on the call that actually created the edge — gates the notification. */
-  created: boolean;
-  /** The edge's id, carried on the notification so accept/decline can resolve it. */
-  followId: Types.ObjectId;
-};
+export type FollowOutcome = { status: FollowStatus; created: boolean; followId: Types.ObjectId };
+type Edge = IFollow & { _id: Types.ObjectId };
 
-/**
- * Creates the edge, or reports the one already there.
- *
- * **Idempotent by design.** Two taps race two inserts; the unique index rejects
- * the loser with 11000 and we read back the winner. The caller gets a success
- * either way, because from the user's point of view pressing Follow twice and
- * being followed once is the correct outcome, not an error.
- *
- * `created` tells the caller whether this call is the one that made the edge —
- * only then should a notification fire, or a double-tap sends two.
- */
-export async function createFollow(
-  followerId: string,
-  followingId: string,
-): Promise<FollowOutcome> {
-  const target = await User.findById(followingId).select('profileVisibility');
-  if (!target) throw new NotFoundError();
-
-  // A private account's follows need approval; a public one's do not.
-  const status: FollowStatus = target.profileVisibility === 'private' ? 'pending' : 'accepted';
-
-  const existing = await Follow.findOne({
-    followerId: oid(followerId),
-    followingId: oid(followingId),
-  }).select('status');
-  if (existing) return { status: existing.status, created: false, followId: existing._id };
-
-  try {
-    return await withTxn(async (session) => {
-      const [edge] = await Follow.create(
-        [
-          {
-            followerId: oid(followerId),
-            followingId: oid(followingId),
-            status,
-            respondedAt: status === 'accepted' ? new Date() : null,
-          },
-        ],
-        { session: session ?? undefined },
-      );
-
-      await applyCounters(status, followerId, followingId, +1, session);
-      return { status: edge.status, created: true, followId: edge._id };
-    });
-  } catch (err) {
-    // Lost the insert race. The winner's edge is the truth; report it.
-    if (isDuplicateKey(err)) {
-      const raced = await Follow.findOne({
-        followerId: oid(followerId),
-        followingId: oid(followingId),
-      }).select('status');
-      if (raced) return { status: raced.status, created: false, followId: raced._id };
-    }
-    throw err;
+/** Backfill old edges when touched, preserving their original approval. */
+async function ensureRequest(edge: Edge, session: ClientSession | null): Promise<void> {
+  await FollowRequest.updateOne(
+    { _id: edge._id },
+    { $setOnInsert: { from: edge.followerId, to: edge.followingId, status: edge.status, createdAt: edge.createdAt } },
+    { upsert: true, session: session ?? undefined, timestamps: false },
+  );
+  if (edge.status === 'pending') {
+    await User.updateOne(
+      { _id: edge.followingId, 'followRequests.from': { $ne: edge.followerId } },
+      { $push: { followRequests: { from: edge.followerId, createdAt: edge.createdAt } } },
+      { session: session ?? undefined },
+    );
   }
 }
 
-/**
- * Unfollow, or cancel one's own pending request — the same delete either way,
- * differing only in which counters move.
- *
- * Returns the status that was removed, or null if there was nothing to remove.
- * Null is not an error: DELETE is idempotent, and unfollowing someone you do
- * not follow has already achieved what the caller wanted.
- */
-export async function removeFollow(
-  followerId: string,
-  followingId: string,
-): Promise<FollowStatus | null> {
-  return withTxn(async (session) => {
-    const edge = await Follow.findOneAndDelete(
-      { followerId: oid(followerId), followingId: oid(followingId) },
-      { session: session ?? undefined },
-    );
-    if (!edge) return null;
+export async function refreshNotificationCount(userId: string, session: ClientSession | null = null): Promise<number> {
+  const unread = await Notification.countDocuments({ userId: oid(userId), read: false }).session(session);
+  await User.updateOne({ _id: oid(userId) }, { $set: { unreadNotificationCount: unread } }, { session: session ?? undefined });
+  return unread;
+}
 
-    await applyCounters(edge.status, followerId, followingId, -1, session);
-    return edge.status;
+async function requestNotification(edge: Edge, type: 'follow_request' | 'follow_accepted', session: ClientSession | null): Promise<void> {
+  const userId = type === 'follow_request' ? edge.followingId : edge.followerId;
+  await Notification.updateOne(
+    { userId, type, followId: edge._id },
+    { $setOnInsert: {
+      userId, type, followId: edge._id,
+      fromUserId: type === 'follow_request' ? edge.followerId : edge.followingId,
+      actionState: type === 'follow_request' ? 'pending' : null,
+      read: false,
+    } },
+    { upsert: true, session: session ?? undefined },
+  );
+  await refreshNotificationCount(String(userId), session);
+}
+
+async function publishNotification(userId: string, followId: Types.ObjectId, type: 'follow_request' | 'follow_accepted'): Promise<void> {
+  const notification = await Notification.findOne({ userId, followId, type })
+    .populate('fromUserId', 'username displayName profilePhoto')
+    .lean();
+  if (notification) emitToUser(userId, 'notification:new', notificationPayload(notification));
+}
+
+function changed(userId: string, otherId: string): void {
+  emitToUser(userId, 'follow:changed', { userId: otherId });
+  emitToUser(userId, 'notification:changed', {});
+}
+
+/** Every new edge begins pending, regardless of profile content visibility. */
+export async function createFollow(followerId: string, followingId: string): Promise<FollowOutcome> {
+  return withPairWrite(followerId, followingId, async () => {
+    const perform = () => withTxn(async (session) => {
+      if (await isBlockedBetween(followerId, followingId, session)) throw new FollowForbiddenError();
+      const target = await User.findById(followingId).select('_id').session(session);
+      const sender = await User.findById(followerId).select('_id').session(session);
+      if (!target || !sender) throw new NotFoundError();
+      const existing = await Follow.findOne({ followerId: oid(followerId), followingId: oid(followingId) }).session(session);
+      if (existing) {
+        await ensureRequest(existing, session);
+        return { status: existing.status, created: false, followId: existing._id };
+      }
+      const [edge] = await Follow.create([
+        { followerId: oid(followerId), followingId: oid(followingId), status: 'pending' },
+      ], { session: session ?? undefined });
+      await ensureRequest(edge, session);
+      await applyCounters('pending', followerId, followingId, 1, session);
+      await requestNotification(edge, 'follow_request', session);
+      return { status: edge.status, created: true, followId: edge._id };
+    });
+    let result: FollowOutcome;
+    try {
+      result = await perform();
+    } catch (err) {
+      if (!isDuplicateKey(err)) throw err;
+      // A competing API process inserted the unique pair first. Retry against
+      // its committed edge; no counters or notifications are duplicated.
+      result = await perform();
+    }
+    if (result.created) {
+      await publishNotification(followingId, result.followId, 'follow_request');
+      changed(followingId, followerId);
+      emitToUser(followerId, 'follow:changed', { userId: followingId });
+    }
+    return result;
   });
 }
 
-/**
- * Moves the counters for one edge appearing (+1) or disappearing (-1).
- *
- * An accepted edge is a real follow on both sides. A pending one is neither —
- * it only sits in the target's request queue, so counting it as a follower
- * would both inflate the number and leak that someone had asked.
- */
+/** Called only while holding this pair's lock, including from blockUser. */
+async function removeEdge(followerId: string, followingId: string, session: ClientSession | null): Promise<FollowStatus | null> {
+  const edge = await Follow.findOneAndDelete(
+    { followerId: oid(followerId), followingId: oid(followingId) },
+    { session: session ?? undefined },
+  );
+  if (!edge) return null;
+  await applyCounters(edge.status, followerId, followingId, -1, session);
+  if (edge.status === 'pending') {
+    // Cancellation is not a recipient's decline and leaves no request to act on.
+    await FollowRequest.deleteOne({ _id: edge._id, status: 'pending' }, { session: session ?? undefined });
+    await Notification.deleteMany({ followId: edge._id, type: 'follow_request' }, { session: session ?? undefined });
+    await refreshNotificationCount(followingId, session);
+  }
+  return edge.status;
+}
+
+export async function removeFollow(followerId: string, followingId: string): Promise<FollowStatus | null> {
+  return withPairWrite(followerId, followingId, async () => {
+    const status = await withTxn((session) => removeEdge(followerId, followingId, session));
+    if (status) {
+      changed(followingId, followerId);
+      emitToUser(followerId, 'follow:changed', { userId: followingId });
+    }
+    return status;
+  });
+}
+
+/** Authorization derives the recipient from auth and the edge; an optional id
+ * pins legacy actions to the exact request shown on their notification. */
+export async function resolveFollow(
+  requesterId: string,
+  recipientId: string,
+  decision: 'accepted' | 'declined',
+  expectedId?: string,
+): Promise<void> {
+  return withPairWrite(requesterId, recipientId, async () => {
+    const result = await withTxn(async (session) => {
+      if (await isBlockedBetween(requesterId, recipientId, session)) throw new FollowForbiddenError();
+      const edge = await Follow.findOne({
+        followerId: oid(requesterId), followingId: oid(recipientId),
+        ...(expectedId ? { _id: oid(expectedId) } : {}),
+      }).session(session);
+      if (!edge) {
+        if (decision === 'declined') {
+          const declined = await FollowRequest.exists({
+            from: oid(requesterId), to: oid(recipientId), status: 'declined',
+            ...(expectedId ? { _id: oid(expectedId) } : {}),
+          }).session(session);
+          if (declined) return null;
+        }
+        throw new RequestGoneError();
+      }
+      if (edge.status === 'accepted') {
+        if (decision === 'accepted') return null;
+        throw new RequestGoneError();
+      }
+      await ensureRequest(edge, session);
+      const opts = { session: session ?? undefined };
+      if (decision === 'accepted') {
+        const updated = await Follow.updateOne(
+          { _id: edge._id, status: 'pending' },
+          { $set: { status: 'accepted', respondedAt: new Date() } }, opts,
+        );
+        if (!updated.modifiedCount) throw new RequestGoneError();
+        await applyCounters('pending', requesterId, recipientId, -1, session);
+        await applyCounters('accepted', requesterId, recipientId, 1, session);
+      } else {
+        const removed = await Follow.deleteOne({ _id: edge._id, status: 'pending' }, opts);
+        if (!removed.deletedCount) throw new RequestGoneError();
+        await applyCounters('pending', requesterId, recipientId, -1, session);
+      }
+      await FollowRequest.updateOne({ _id: edge._id }, { $set: { status: decision } }, opts);
+      if (decision === 'accepted') {
+        await Notification.updateMany(
+          { userId: oid(recipientId), followId: edge._id, type: 'follow_request' },
+          { $set: { actionState: 'accepted', read: true } }, opts,
+        );
+        await requestNotification(edge, 'follow_accepted', session);
+      } else {
+        // Marked, not deleted. The card keeps its place reading "Declined" —
+        // a row vanishing under the user's finger is disorienting, and it is
+        // the only thing that ever writes the enum's third state.
+        await Notification.updateMany(
+          { userId: oid(recipientId), followId: edge._id, type: 'follow_request' },
+          { $set: { actionState: 'declined', read: true } }, opts,
+        );
+      }
+      await refreshNotificationCount(recipientId, session);
+      return edge._id;
+    });
+    if (result) {
+      changed(recipientId, requesterId);
+      // A decline is silent for the requester, including sockets.
+      if (decision === 'accepted') {
+        await publishNotification(requesterId, result, 'follow_accepted');
+        changed(requesterId, recipientId);
+      }
+    }
+  });
+}
+
+/** Counters and the User arrays change only after a successful edge transition. */
 export async function applyCounters(
   status: FollowStatus,
   followerId: string,
@@ -152,78 +252,62 @@ export async function applyCounters(
   delta: 1 | -1,
   session: ClientSession | null,
 ): Promise<void> {
-  const opts = session ? { session } : {};
-
+  const opts = { session: session ?? undefined };
   if (status === 'accepted') {
-    await Promise.all([
-      User.updateOne({ _id: oid(followerId) }, { $inc: { followingCount: delta } }, opts),
-      User.updateOne({ _id: oid(followingId) }, { $inc: { followerCount: delta } }, opts),
-    ]);
+    const arrayOp = delta === 1 ? '$addToSet' : '$pull';
+    // Transaction operations must be sequential on the same session.
+    await User.updateOne({ _id: oid(followerId) }, {
+      $inc: { followingCount: delta }, [arrayOp]: { following: oid(followingId) },
+    }, opts);
+    await User.updateOne({ _id: oid(followingId) }, {
+      $inc: { followerCount: delta }, [arrayOp]: { followers: oid(followerId) },
+    }, opts);
     return;
   }
-
-  await User.updateOne(
-    { _id: oid(followingId) },
-    { $inc: { pendingRequestCount: delta } },
-    opts,
-  );
+  await User.updateOne({ _id: oid(followingId) }, {
+    $inc: { pendingRequestCount: delta },
+    ...(delta === -1 ? { $pull: { followRequests: { from: oid(followerId) } } } : {}),
+  }, opts);
 }
 
-/**
- * Blocks `blockedId` and severs everything between the two.
- *
- * A block that only prevents *future* follows leaves the existing relationship
- * intact, which is the opposite of what the person pressing it wants. So this
- * removes edges in both directions, pending requests both ways, and the
- * notifications either has from the other — then fixes the counters those
- * deletions invalidated.
- */
 export async function blockUser(blockerId: string, blockedId: string): Promise<void> {
-  if (blockerId === blockedId) throw new Error('Cannot block yourself');
-
-  try {
-    await Block.create({ blockerId: oid(blockerId), blockedId: oid(blockedId) });
-  } catch (err) {
-    // Already blocked. Idempotent — fall through and re-run the teardown, which
-    // is harmless and repairs a half-finished previous attempt.
-    if (!isDuplicateKey(err)) throw err;
-  }
-
-  const pair = [
-    { followerId: oid(blockerId), followingId: oid(blockedId) },
-    { followerId: oid(blockedId), followingId: oid(blockerId) },
-  ];
-
-  // Read before deleting: the counters can only be corrected by knowing what
-  // each edge's status was.
-  const edges = await Follow.find({ $or: pair }).lean();
-  await Follow.deleteMany({ $or: pair });
-
-  for (const e of edges) {
-    await applyCounters(e.status, String(e.followerId), String(e.followingId), -1, null);
-  }
-
-  await Notification.deleteMany({
-    $or: [
-      { userId: oid(blockerId), fromUserId: oid(blockedId) },
-      { userId: oid(blockedId), fromUserId: oid(blockerId) },
-    ],
+  if (blockerId === blockedId) throw new FollowForbiddenError();
+  await withPairWrite(blockerId, blockedId, async () => {
+    await withTxn(async (session) => {
+      await Block.updateOne(
+        { blockerId: oid(blockerId), blockedId: oid(blockedId) },
+        { $setOnInsert: { blockerId: oid(blockerId), blockedId: oid(blockedId) } },
+        { upsert: true, session: session ?? undefined },
+      );
+      await removeEdge(blockerId, blockedId, session);
+      await removeEdge(blockedId, blockerId, session);
+      await Notification.deleteMany({ $or: [
+        { userId: oid(blockerId), fromUserId: oid(blockedId) },
+        { userId: oid(blockedId), fromUserId: oid(blockerId) },
+      ] }, { session: session ?? undefined });
+      await refreshNotificationCount(blockerId, session);
+      await refreshNotificationCount(blockedId, session);
+    });
+    changed(blockerId, blockedId);
+    changed(blockedId, blockerId);
   });
 }
 
-/** Lifts a block. Does not restore anything — the edges are gone for good. */
 export async function unblockUser(blockerId: string, blockedId: string): Promise<void> {
-  await Block.deleteOne({ blockerId: oid(blockerId), blockedId: oid(blockedId) });
+  await withPairWrite(blockerId, blockedId, async () => {
+    await Block.deleteOne({ blockerId: oid(blockerId), blockedId: oid(blockedId) });
+  });
 }
 
-/** Thrown when the follow target does not exist, so the route can answer 404. */
 export class NotFoundError extends Error {
-  constructor() {
-    super('User not found');
-    this.name = 'NotFoundError';
-  }
+  constructor() { super('User not found'); this.name = 'NotFoundError'; }
 }
-
+export class RequestGoneError extends Error {
+  constructor() { super('That request is no longer available'); this.name = 'RequestGoneError'; }
+}
+export class FollowForbiddenError extends Error {
+  constructor() { super("Can't follow this account"); this.name = 'FollowForbiddenError'; }
+}
 export function isDuplicateKey(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000;
 }

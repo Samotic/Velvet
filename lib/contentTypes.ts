@@ -183,12 +183,27 @@ export interface Conversation {
   unread: number;
 }
 
+/** Mirrors `MESSAGE_KINDS` in backend/src/models/Message.ts. */
+export type MessageKind = 'text' | 'image' | 'audio';
+
 export interface DirectMessage {
   id: string;
   conversationId: string;
   senderId: string;
   receiverId: string;
+  /** Which of the three shapes this is. The renderer branches on this, never
+   *  on whether `mediaUrl` happens to be set. */
+  kind: MessageKind;
+  /** The body for `kind: 'text'`; empty on a media message. */
   text: string;
+  /** Cloudinary URL for a photo or voice note; null on text. */
+  mediaUrl: string | null;
+  /** Seconds, for `kind: 'audio'` — measured server-side at upload. */
+  mediaDuration: number | null;
+  /** Natural size, for `kind: 'image'`, so the bubble reserves the right box
+   *  and the log doesn't jump as photos load. */
+  mediaWidth: number | null;
+  mediaHeight: number | null;
   read: boolean;
   createdAt: string;
 }

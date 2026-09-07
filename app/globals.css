@@ -77,6 +77,30 @@
   --v-text-rgb: 224, 222, 242;
   --v-danger-rgb: 217, 112, 122;
 
+  /* --- direct messages: a deliberate, scoped exception ---------------------
+     The one-hue rule above governs the whole product, and these six tokens are
+     the single documented departure from it. They exist only inside
+     `.msg-shell`.
+
+     Why: a chat thread stacks four depths in one column — page, bubble,
+     composer field, hover. On the indigo ramp those four values sit close
+     enough in hue that nothing reads as figure against ground; the screen goes
+     purple-on-purple and the eye loses the message boundary. Chat is the only
+     surface in Velvet with that many nested planes, which is why it is the only
+     surface that needs near-neutral ground to separate them.
+
+     The accent is untouched and still does the one job it does everywhere else:
+     it marks what is mine, and what sends. It appears exactly twice per screen
+     — outgoing bubbles and the send button — so posters and the accent remain
+     the only saturated things on the page. */
+  --chat-bg: #0a0a0f;
+  --chat-surface: #16161f;
+  --chat-surface-raised: #1f1f2b;
+  --chat-accent: var(--v-accent);
+  --chat-border: rgba(255, 255, 255, 0.08);
+  --chat-text: #ededf2;
+  --chat-text-muted: #8a8a9a;
+
   /* =========================================================================
      Legacy names, mapped by MEANING rather than by name.
 
@@ -524,22 +548,37 @@ body {
   width: 19px;
   height: 19px;
 }
+/*
+ * The unread count, on the corner of the bell or the envelope.
+ *
+ * `content-box` is what hid the icon: a 16px min-width plus 8px of padding and
+ * 4px of border rendered a 28px badge on a 38px button, and at 6px from the
+ * corner that covered nearly the whole glyph — the count obscured the thing it
+ * was counting. Sized border-box and pinned to the corner, it overlaps only the
+ * top-right of the icon, which is the one part of a bell or an envelope that
+ * carries no shape.
+ */
 .badge-dot {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 0;
+  right: 0;
+  box-sizing: border-box;
   min-width: 16px;
   height: 16px;
-  padding: 0 4px;
+  /* 3px, not 4: it keeps a single digit circular while "9+" still fits. */
+  padding: 0 3px;
   border-radius: 100px;
   background: var(--accent);
   color: var(--on-accent);
   font-size: 9.5px;
   font-weight: 700;
-  line-height: 16px;
+  /* The box less its 2px border top and bottom, so the digit sits centred. */
+  line-height: 12px;
   text-align: center;
-  border: 2px solid var(--bg);
-  box-sizing: content-box;
+  /* The ring is what separates the badge from the icon under it, so it has to
+     match the surface it sits on. It was `--bg`, the page behind the navbar,
+     which is a different shade from the navbar itself. */
+  border: 2px solid var(--v-nav);
 }
 
 .avatar-btn {
@@ -1110,6 +1149,28 @@ textarea.input {
 
 .screen-head {
   padding: 44px 0 6px;
+}
+/* Back to the screen this one was opened from. Explicit rather than relying on
+   history, because a nested screen can also be reached by a direct link. */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 10px;
+  font-family: var(--font-cond);
+  font-size: 13px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--muted);
+  transition: color var(--t-fast) var(--ease);
+}
+.back-link:hover {
+  color: var(--accent);
+}
+.back-link:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 3px;
 }
 .screen-title {
   font-family: var(--font-display);
@@ -3698,19 +3759,6 @@ textarea.input {
   animation-delay: 0.32s;
 }
 
-.composer {
-  flex-shrink: 0;
-  border-top: 1px solid var(--line-soft);
-  padding: 16px var(--gutter);
-  background: var(--bg);
-}
-.composer-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  max-width: 900px;
-  margin: 0 auto;
-}
 /* --- taste picker (cold start) -------------------------------------------- */
 
 .taste-picker {
@@ -4109,14 +4157,26 @@ textarea.input {
 
 /* Stands in for the composer when the follow isn't mutual. Muted and centred:
    it states a rule, so it should read as a note rather than an error. */
-.composer-locked {
+
+
+/* ---------------------------------------------------------------------
+   The advisor composer. Shared by components/ai/AdvisorScreen.tsx only —
+   the DM composer is a separate set of `.chat-*` rules further down, so the
+   two can move independently instead of one screen inheriting the other's
+   layout by accident.
+   ------------------------------------------------------------------- */
+.composer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line-soft);
+  padding: 16px var(--gutter);
+  background: var(--bg);
+}
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
   max-width: 900px;
   margin: 0 auto;
-  padding: 6px 0;
-  text-align: center;
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--muted);
 }
 .composer textarea {
   flex: 1;
@@ -4203,7 +4263,8 @@ textarea.input {
 .msg-list {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--line-soft);
+  background: var(--chat-surface);
+  border-right: 1px solid var(--chat-border);
   min-height: 0;
 }
 /* On phones the inbox and the thread are separate screens. */
@@ -4217,7 +4278,7 @@ textarea.input {
 }
 .msg-list-head {
   padding: 18px 18px 14px;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--chat-border);
   flex-shrink: 0;
 }
 .msg-list-scroll {
@@ -4236,11 +4297,14 @@ textarea.input {
   transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
 .conv:hover {
-  background: var(--card);
+  background: var(--chat-surface-raised);
 }
+/* Selected row is marked by surface and a light rule, not by the accent: the
+   accent is reserved for outgoing bubbles and the send button, so that a glance
+   at the screen reads "this is mine" in exactly one colour. */
 .conv.active {
-  background: var(--card);
-  border-left-color: var(--accent);
+  background: var(--chat-surface-raised);
+  border-left-color: var(--chat-text);
 }
 .conv-body {
   flex: 1;
@@ -4255,19 +4319,19 @@ textarea.input {
 .conv-name {
   font-size: 14px;
   font-weight: 600;
-  color: var(--white);
+  color: var(--chat-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .conv-time {
   font-size: 11.5px;
-  color: var(--muted);
+  color: var(--chat-text-muted);
   flex-shrink: 0;
 }
 .conv-preview {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--chat-text-muted);
   font-weight: 300;
   margin-top: 4px;
   white-space: nowrap;
@@ -4275,14 +4339,15 @@ textarea.input {
   text-overflow: ellipsis;
 }
 .conv.unread .conv-preview {
-  color: var(--accent-pale);
+  color: var(--chat-text);
   font-weight: 400;
 }
+/* Unread marker in plain text colour rather than accent — see .conv.active. */
 .conv-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--chat-text);
   flex-shrink: 0;
 }
 
@@ -4290,84 +4355,608 @@ textarea.input {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: var(--chat-bg);
 }
+
+/* --- header --------------------------------------------------------------
+   A sibling of the scroll container, never inside it, so it cannot scroll
+   away. Sits one step above the thread ground so the two planes separate. */
 .thread-head {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px var(--gutter);
-  border-bottom: 1px solid var(--line-soft);
+  padding: 12px var(--gutter);
+  background: var(--chat-surface-raised);
+  border-bottom: 1px solid var(--chat-border);
   flex-shrink: 0;
 }
-.thread-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--white);
-  text-decoration: none;
+/* 40px exactly, per spec — the shared Avatar's `md` is 42, and scoping the
+   override here is cheaper than adding a size every other screen must ignore. */
+.thread-head .avatar {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
 }
+.thread-id {
+  flex: 1;
+  min-width: 0;
+}
+.thread-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--chat-text);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Reserved for presence. Velvet tracks none, so nothing renders here — a
+   follower count is not a fact about a conversation. */
 .thread-sub {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--chat-text-muted);
   margin-top: 2px;
 }
+/* Ghost, not filled: following someone is not the primary action of a thread. */
+.btn-ghost {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: 100px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--chat-text-muted);
+  background: transparent;
+  border: 1px solid var(--chat-border);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.btn-ghost:hover {
+  color: var(--chat-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.btn-ghost.on {
+  color: var(--chat-text);
+}
+
+/* --- the log -------------------------------------------------------------
+   The scroll container spans the pane and carries only enough padding to keep
+   bubbles off the viewport edge; the 720px measure lives on the inner track,
+   so the scrollbar stays at the pane edge where it belongs. */
 .thread-log {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 22px var(--gutter);
+  overflow-x: hidden;
+  padding: 0 16px;
+  background: var(--chat-bg);
+}
+.thread-inner {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 20px 24px 24px;
+  display: flex;
+  flex-direction: column;
+}
+@media (max-width: 560px) {
+  .thread-log {
+    padding: 0 8px;
+  }
+  .thread-inner {
+    padding: 16px 8px 20px;
+  }
+}
+
+/* --- day divider ---------------------------------------------------------- */
+.day-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 22px 0 16px;
+}
+.day-divider::before,
+.day-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--chat-border);
+}
+.day-divider span {
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  color: var(--chat-text-muted);
+  white-space: nowrap;
+}
+
+/* --- groups --------------------------------------------------------------
+   16px between groups, 4px inside one. That ratio is what makes a stack read
+   as one turn and the next group as a reply. */
+.msg-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.thread-divider {
-  text-align: center;
-  font-size: 11.5px;
-  color: var(--muted);
-  margin: 18px 0 10px;
+.msg-group + .msg-group {
+  margin-top: 16px;
 }
+.group-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--chat-text-muted);
+  margin: 0 0 4px 46px;
+}
+/* Every row spans the pane and pushes its bubble to one of two edges. No
+   absolute positioning and no margin arithmetic — alignment is the only thing
+   that decides which side a message sits on. */
+.msg-row {
+  display: flex;
+  width: 100%;
+  align-items: flex-end;
+  gap: 6px;
+}
+.msg-group.in .msg-row {
+  justify-content: flex-start;
+}
+.msg-group.out .msg-row {
+  justify-content: flex-end;
+}
+/* Holds the avatar on the group's last row and reserves its width on the rest,
+   so the bubbles above stay flush instead of stepping left. */
+.msg-gutter {
+  width: 34px;
+  flex-shrink: 0;
+  align-self: flex-end;
+}
+
+/* --- bubbles -------------------------------------------------------------- */
 .bubble {
-  max-width: min(72%, 560px);
-  padding: 11px 15px;
-  border-radius: 6px;
+  position: relative;
+  max-width: 65%;
+  padding: 9px 13px;
   font-size: 14.5px;
-  line-height: 1.55;
+  line-height: 1.5;
   font-weight: 300;
   overflow-wrap: anywhere;
   animation: msgIn 0.28s var(--ease) both;
-  margin-bottom: 4px;
 }
-/* Sent: right, filled indigo, dark text — the accent is light, so the bubble
-   takes --on-accent rather than the off-white the copper fill carried. */
+/* Sent: filled accent, dark text. One of exactly two places the accent is
+   allowed on this screen — the other is the send button. */
 .bubble.mine {
-  align-self: flex-end;
-  background: var(--accent);
-  color: var(--on-accent);
-  border-bottom-right-radius: 2px;
+  background: var(--chat-accent);
+  color: var(--v-on-accent);
 }
-/* Received: left, dark card, pale indigo text, indigo left border. */
+/* Received: raised surface, plain text, no accent anywhere. */
 .bubble.theirs {
-  align-self: flex-start;
-  background: var(--bg-input);
-  color: var(--accent-pale);
-  border-left: 2px solid var(--accent);
-  border-bottom-left-radius: 2px;
+  background: var(--chat-surface);
+  color: var(--chat-text);
 }
+/* Corner radii. Outer corners on the leading and trailing bubbles stay round;
+   the inner corners where bubbles meet tighten to 4px. A lone bubble is both
+   leading and trailing, so it stays fully round. */
+.bubble.solo {
+  border-radius: 16px;
+}
+.msg-group.in .bubble.lead {
+  border-radius: 16px 16px 16px 4px;
+}
+.msg-group.in .bubble.mid {
+  border-radius: 4px 16px 16px 4px;
+}
+.msg-group.in .bubble.tail {
+  border-radius: 4px 16px 16px 16px;
+}
+.msg-group.out .bubble.lead {
+  border-radius: 16px 16px 4px 16px;
+}
+.msg-group.out .bubble.mid {
+  border-radius: 16px 4px 4px 16px;
+}
+.msg-group.out .bubble.tail {
+  border-radius: 16px 4px 16px 16px;
+}
+.bubble-text {
+  white-space: pre-wrap;
+}
+/* Invisible, and exactly the width of the stamp positioned over it. Reserves
+   room on the final line so the two never overlap. */
+.bubble-time-shim {
+  display: inline-block;
+  width: 40px;
+  height: 1px;
+}
+.bubble-time {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.66;
+}
+/* On a photo there is no text line to align to, so the stamp gets its own
+   scrim rather than a shim. */
+.bubble-time.on-media {
+  right: 8px;
+  bottom: 7px;
+  padding: 2px 6px;
+  border-radius: 100px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 1;
+}
+/* A voice note's own duration already holds that corner and the bubble is a
+   fixed height, so its stamp sits just beneath. The one place the timestamp is
+   not inside the bubble, and only for this kind. */
+.bubble-time.under {
+  position: static;
+  align-self: flex-end;
+  padding-bottom: 2px;
+  color: var(--chat-text-muted);
+  opacity: 1;
+}
+
+/* Delivery state. A failed message keeps its place; it is never removed.
+
+   Expressed as `filter`, not `opacity`, and that is load-bearing: `.bubble`
+   runs `msgIn` with `fill-mode: both`, so the animation's final `opacity: 1`
+   persists and outranks any normal `opacity` declaration in the cascade. A
+   plain `opacity: .6` here computes to 1 and the bubble never dims. `filter` is
+   untouched by the animation, so it composes instead of losing. */
+.bubble.sending {
+  filter: opacity(0.75);
+}
+.bubble.failed {
+  filter: opacity(0.6);
+}
+.send-retry {
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  color: var(--chat-text-muted);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
+}
+.send-retry:hover {
+  color: var(--chat-text);
+}
+
 .typing-line {
   font-size: 12.5px;
-  color: var(--muted);
-  padding: 6px 2px;
+  color: var(--chat-text-muted);
+  padding: 8px 0 0 46px;
   font-style: italic;
 }
 
-/* emoji picker */
+/* --- empty and loading ---------------------------------------------------- */
+.thread-empty {
+  margin: auto;
+  padding: 48px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.thread-empty-name {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--chat-text);
+}
+.thread-empty-line {
+  font-size: 13.5px;
+  color: var(--chat-text-muted);
+  margin: 0;
+}
+/* No shimmer: a thread is read, not scanned, and a pulsing placeholder reads
+   as activity in a surface where activity means a message arrived. */
+.bubble-skeleton {
+  height: 38px;
+  border-radius: 16px;
+  background: var(--chat-surface);
+}
+
+/* --- photo bubbles -------------------------------------------------------- */
+.bubble.media {
+  padding: 0;
+  overflow: hidden;
+  max-width: min(65%, 320px);
+}
+.bubble-photo {
+  display: block;
+  line-height: 0;
+}
+/* The wrapper holds the aspect ratio, so the box is the right shape before the
+   image decodes and the log never reflows underneath the reader. */
+.photo-frame {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  max-height: 400px;
+  background: var(--chat-surface-raised);
+  overflow: hidden;
+}
+.photo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* --- voice notes ---------------------------------------------------------
+   Every colour is `currentColor`: the same component renders on an
+   accent-filled bubble (dark text) and a neutral one (light text), so naming
+   either would make it invisible in the other. */
+.bubble.media.voice {
+  max-width: 280px;
+}
+.voice-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 280px;
+  height: 56px;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+.voice-play {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.bubble.mine .voice-play:hover {
+  background: rgba(var(--v-ink-rgb), 0.16);
+}
+.bubble.theirs .voice-play:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.voice-wave {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  cursor: pointer;
+}
+/* Focus rings here are --chat-text, not the accent: the accent has exactly two
+   jobs on this screen, and a ring borrowing it would read as an outgoing
+   message. */
+.voice-wave:focus-visible,
+.voice-play:focus-visible,
+.chat-icon:focus-visible,
+.chat-send:focus-visible,
+.send-retry:focus-visible,
+.btn-ghost:focus-visible,
+.thread-name:focus-visible {
+  outline: 2px solid var(--chat-text);
+  outline-offset: 2px;
+}
+.voice-bar {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 100px;
+  background: currentColor;
+  opacity: 0.32;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.voice-bar.played {
+  opacity: 1;
+}
+/* Replaces the waveform only, never the bubble — the shape stays so the thread
+   does not reflow around a failure. */
+.voice-failed {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.3;
+  opacity: 0.8;
+}
+.voice-retry {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.voice-time {
+  flex-shrink: 0;
+  font-family: var(--font-cond);
+  font-size: 12.5px;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+
+/* --- composer ------------------------------------------------------------
+   The rule spans the pane; the field matches the thread's 720px measure so the
+   two columns line up. */
+.chat-composer {
+  flex-shrink: 0;
+  padding: 12px 16px 16px;
+  background: var(--chat-bg);
+  border-top: 1px solid var(--chat-border);
+}
+.chat-composer-inner {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+@media (max-width: 560px) {
+  .chat-composer-inner {
+    padding: 0 8px;
+  }
+}
+.chat-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 6px 6px 6px 8px;
+  background: var(--chat-surface);
+  border: 1px solid var(--chat-border);
+  border-radius: 16px;
+  transition: border-color var(--t-fast) var(--ease);
+}
+.chat-field:focus-within {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.chat-emoji {
+  position: relative;
+  display: flex;
+}
+/* 36px hit area around a 20px icon — the target is finger-sized even though
+   the mark is not. */
+.chat-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--chat-text-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.chat-icon:hover:not(:disabled) {
+  color: var(--chat-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.chat-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.chat-field textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 8px 6px;
+  color: var(--chat-text);
+  font-family: var(--font-ui);
+  font-size: 14.5px;
+  font-weight: 300;
+  line-height: 20px;
+  max-height: 140px;
+}
+.chat-field textarea::placeholder {
+  color: var(--chat-text-muted);
+}
+.chat-locked {
+  margin: 0;
+  padding: 10px 0;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--chat-text-muted);
+}
+/* The second and last place the accent appears on this screen. */
+.chat-send {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: none;
+  background: var(--chat-accent);
+  color: var(--v-on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: filter var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
+}
+.chat-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.chat-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-send svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* --- recording state ------------------------------------------------------ */
+.chat-field.recording {
+  padding-left: 6px;
+}
+.rec-state {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 8px;
+}
+.rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--v-danger);
+  flex-shrink: 0;
+  animation: recPulse 1.4s var(--ease) infinite;
+}
+@keyframes recPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+.rec-time {
+  font-family: var(--font-cond);
+  font-size: 15px;
+  letter-spacing: 0.6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--chat-text);
+}
+.rec-hint {
+  font-size: 12px;
+  color: var(--chat-text-muted);
+  margin-left: auto;
+}
+
+/* --- emoji picker --------------------------------------------------------- */
 .emoji-pop {
   position: absolute;
   bottom: calc(100% + 10px);
   left: 0;
   width: 274px;
   padding: 12px;
-  background: var(--bg-raise);
-  border: 1px solid var(--line-soft);
-  border-radius: 6px;
+  background: var(--chat-surface-raised);
+  border: 1px solid var(--chat-border);
+  border-radius: 12px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
   display: grid;
   grid-template-columns: repeat(8, 1fr);
@@ -4386,7 +4975,7 @@ textarea.input {
   transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 .emoji-pop button:hover {
-  background: var(--card);
+  background: rgba(255, 255, 255, 0.07);
   transform: scale(1.18);
 }
 
@@ -4497,6 +5086,266 @@ textarea.input {
 @media (min-width: 768px) {
   .profile-actions {
     justify-content: flex-start;
+  }
+}
+
+/* --- follow button: Follow → Requested → Following ----------------------- */
+/* Three states on one element, with a floor under its width, so the control
+   neither moves nor resizes as it changes — a button that reflows under the
+   cursor between "Follow" and "Following" gets mis-clicked. Only the fill
+   differs between the states; the pill geometry is shared. */
+.follow-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 132px;
+  padding: 13px 22px;
+  border-radius: 100px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease), transform 0.15s var(--ease),
+    filter var(--t-fast) var(--ease);
+}
+/* Not following yet: the one solid indigo call to action on the profile. */
+.follow-button-none {
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+.follow-button-none:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+/* Requested: outlined, because nothing has been granted yet. A filled button
+   here would read as "you are in" while the request is still pending. */
+.follow-button-pending {
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+}
+.follow-button-pending:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+/* Following: settled, so it recedes. Accent means interactive or important,
+   and a follow that already exists is neither. */
+.follow-button-accepted {
+  font-weight: 500;
+  color: var(--muted-2);
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+.follow-button-accepted:hover:not(:disabled) {
+  background: var(--card-hover);
+  border-color: var(--line-accent);
+  color: var(--accent-light);
+}
+.follow-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.follow-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.follow-button:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 3px;
+}
+/* List rows carry the same three states at row scale. The width floor is
+   smaller but still a floor, so a column of them stays aligned. */
+.follow-button-sm {
+  min-width: 104px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+}
+
+/* --- unfollow confirmation ----------------------------------------------- */
+/* A real <dialog>: Escape, the backdrop and the focus trap come from the
+   platform instead of being three things to reimplement and forget one of. */
+.follow-confirm {
+  max-width: min(420px, calc(100vw - 36px));
+  padding: 0;
+  color: var(--ink);
+  background: var(--bg-raise);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  box-shadow: 0 20px 44px -18px rgba(0, 0, 0, 0.8);
+}
+.follow-confirm::backdrop {
+  background: rgba(4, 4, 14, 0.72);
+}
+.follow-confirm-body {
+  padding: 26px;
+}
+.follow-confirm h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 25px;
+  font-weight: 400;
+  color: var(--display);
+}
+.follow-confirm p {
+  margin: 10px 0 0;
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 1.6;
+  color: var(--muted-2);
+}
+.follow-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+/* The dialog's own buttons sit side by side and size to their words. */
+.follow-confirm-actions .follow-button {
+  min-width: 0;
+}
+
+/* --- follows you / pending requests -------------------------------------- */
+/* A statement of fact rather than an action, so it is a quiet chip and carries
+   no accent — the accent on this screen belongs to the Follow button. */
+.follows-you {
+  display: inline-block;
+  margin-left: 9px;
+  padding: 3px 9px;
+  vertical-align: middle;
+  font-size: 11px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--line-soft);
+  border-radius: 100px;
+}
+.profile-requests {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-deep);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.profile-requests:hover {
+  color: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+
+/* --- pending follow requests, below the profile hero --------------------- */
+/* A sibling of `.profile-head` and `.tabs`, so its edges land on the page's
+   own grid and its left edge lines up with the OVERVIEW tab. It was a child of
+   `.profile-head` — a flex row on desktop — carrying `width: 100%`, which made
+   it a full-bleed bar through the identity block with its buttons beside
+   Follow: two action clusters in one row, and the name covered.
+
+   Opaque, because it sits over the hero gradient and a translucent wash there
+   reads as a rendering fault rather than a surface. */
+.profile-request {
+  margin: 0 0 16px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.profile-request-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.profile-request-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+/* Several entries read as one queue rather than a stack of separate alerts. */
+.profile-request-row + .profile-request-row {
+  border-top: 1px solid var(--line-soft);
+}
+.profile-request-avatar.avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+}
+.profile-request-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted-2);
+  /* One line, always. The row is an action, and a sentence that wraps pushes
+     the buttons out of line with the rows above it. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-request-text strong {
+  font-weight: 500;
+  color: var(--display);
+}
+.profile-request-more {
+  display: block;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  transition: color var(--t-fast) var(--ease);
+}
+.profile-request-more:hover {
+  color: var(--accent-bright);
+}
+
+/* The inline answer pair. Built from the shared button primitives at row
+   height, so it inherits the ripple, focus ring and disabled treatment rather
+   than restating them. Decline first, so the affirmative action sits furthest
+   right where the eye finishes. */
+.fr-inline-wrap {
+  flex-shrink: 0;
+}
+.fr-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fr-btn {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.fr-error {
+  margin: 6px 0 0;
+  color: var(--v-danger);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .profile-request-row {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  /* Avatar and name keep the first row; the answer moves to its own row and
+     splits it evenly, so neither button is the easier one to hit. */
+  .profile-request-row .fr-inline-wrap {
+    flex-basis: 100%;
+  }
+  .profile-request-row .fr-btn {
+    flex: 1 1 0;
+  }
+  .fr-error {
+    text-align: left;
   }
 }
 

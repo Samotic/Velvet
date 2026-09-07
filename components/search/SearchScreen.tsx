@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 
 import { PosterCard } from '@/components/PosterCard';
 import { useAuth } from '@/components/auth/AuthProvider';
@@ -14,7 +14,7 @@ import { searchContent, searchPeople } from '@/lib/catalog';
 import { CONTENT_TYPES, TYPE_LABEL, type CatalogSummary, type ContentType } from '@/lib/contentTypes';
 import { compactCount } from '@/lib/format';
 import { GENRE_FILTERS } from '@/lib/homeFilters';
-import { followUser, unfollowUser } from '@/lib/users';
+import { FollowButton } from '@/components/profile/FollowButton';
 
 type Mode = 'content' | 'people';
 
@@ -274,36 +274,6 @@ export function SearchScreen() {
 function PeopleResults({ term, people }: { term: string; people: PublicProfile[] | null }) {
   const toast = useToast();
   const { isAuthenticated, user: me } = useAuth();
-  const [pending, setPending] = useState<Record<string, boolean>>({});
-  const [followed, setFollowed] = useState<Record<string, boolean>>({});
-
-  // Seed the local follow map whenever a fresh result set lands.
-  useEffect(() => {
-    if (!people) return;
-    setFollowed(Object.fromEntries(people.map((p) => [p.id, p.isFollowing])));
-  }, [people]);
-
-  const toggle = useCallback(
-    async (u: PublicProfile) => {
-      if (!isAuthenticated) {
-        toast.bad('Sign in to follow people');
-        return;
-      }
-      const next = !followed[u.id];
-      setFollowed((f) => ({ ...f, [u.id]: next }));
-      setPending((p) => ({ ...p, [u.id]: true }));
-      try {
-        if (next) await followUser(u.id);
-        else await unfollowUser(u.id);
-      } catch {
-        setFollowed((f) => ({ ...f, [u.id]: !next }));
-        toast.bad('Could not update follow');
-      } finally {
-        setPending((p) => ({ ...p, [u.id]: false }));
-      }
-    },
-    [followed, isAuthenticated, toast],
-  );
 
   if (!term) {
     return (
@@ -353,17 +323,27 @@ function PeopleResults({ term, people }: { term: string; people: PublicProfile[]
               @{u.username} · {compactCount(u.followerCount)} followers
             </div>
           </a>
-          {u.id !== me?.id && (
-            <button
-              type="button"
-              className={followed[u.id] ? 'btn-outline on' : 'btn-fill'}
-              style={{ padding: '9px 18px', fontSize: 13.5 }}
-              disabled={pending[u.id]}
-              onClick={() => void toggle(u)}
-            >
-              {followed[u.id] ? 'Following ✓' : 'Follow'}
-            </button>
-          )}
+          {u.id !== me?.id &&
+            (isAuthenticated ? (
+              /* The same three states as the profile, so a request sent from
+                 search reads "Requested" here too rather than claiming a
+                 follow that has not been granted. */
+              <FollowButton
+                userId={u.id}
+                username={u.username}
+                isFollowing={u.isFollowing}
+                requested={u.followRequested}
+                compact
+              />
+            ) : (
+              <button
+                type="button"
+                className="follow-button follow-button-none follow-button-sm"
+                onClick={() => toast.bad('Sign in to follow people')}
+              >
+                Follow
+              </button>
+            ))}
         </div>
         </Fragment>
       ))}

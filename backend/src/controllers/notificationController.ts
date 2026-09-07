@@ -5,10 +5,14 @@ import { Follow } from '../models/Follow';
 import { Notification } from '../models/Notification';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
-import { applyCounters, followStatusMap, withTxn } from '../services/social';
+import {
+  followStatusMap,
+  FollowForbiddenError,
+  RequestGoneError,
+  resolveFollow,
+} from '../services/social';
 import { fail, ok } from '../utils/http';
-import { notify } from '../utils/notify';
-import { userRef } from '../utils/serialize';
+import { notificationPayload, userRef } from '../utils/serialize';
 import { isObjectId, str } from '../utils/validation';
 
 const AUTHOR = 'username displayName profilePhoto';
@@ -20,32 +24,17 @@ const AUTHOR = 'username displayName profilePhoto';
  * proof, and the viewer's relationship to that actor — so the client never
  * follows up with a second request per row. That N+1 is the thing this
  * endpoint exists to avoid.
+ *
+ * The mapping itself lives in `notificationPayload` because the socket push
+ * needs the identical shape; two copies of it is how a live-arriving row ends
+ * up rendering differently from the same row after a reload.
  */
 function toJson(
   n: Record<string, unknown> & { _id: unknown },
   viewerFollows: 'pending' | 'accepted' | null,
   ratingCount: number,
 ) {
-  const actor = userRef(n.fromUserId);
-  return {
-    id: String(n._id),
-    type: n.type,
-    /** Kept as `from` — the existing UI reads that name. */
-    from: actor,
-    actor: actor ? { ...actor, ratingCount } : null,
-    contentId: n.contentId ?? null,
-    contentType: n.contentType ?? null,
-    contentTitle: n.contentTitle ?? null,
-    read: Boolean(n.read),
-    state: n.read ? 'read' : 'unread',
-    actionState: n.actionState ?? null,
-    followRequestId: n.followId ? String(n.followId) : null,
-    /** Drives Follow back: true only for a settled follow, not a request. */
-    viewerFollowsActor: viewerFollows === 'accepted',
-    /** So the button can say "Requested" rather than offering Follow again. */
-    viewerRequestedActor: viewerFollows === 'pending',
-    createdAt: n.createdAt,
-  };
+  return notificationPayload(n, { viewerFollows, ratingCount });
 }
 
 /**
@@ -206,118 +195,70 @@ export async function readOne(req: Request, res: Response): Promise<Response> {
 /* --------------------------- follow requests ----------------------------- */
 
 /**
- * POST /api/follow-requests/:id/accept
+ * The notification card's Accept / Decline, addressed by **edge id**.
  *
- * `:id` is the Follow edge's id. Three things have to hold, and each maps to a
- * distinct status the client can act on:
+ * `/api/users/:id/accept-follow` names the requester and is what the profile
+ * and the request queue call. This pair exists because a notification row knows
+ * the edge it was raised for and not much else, and pinning the action to that
+ * exact edge is what stops a card that has been sitting on screen from
+ * resolving a *newer* request from the same person.
  *
- *   404 — no such edge, or it was never a request
+ * Both delegate to `resolveFollow`, so the transaction, the counters, the
+ * request history and the sockets are the same ones the primary route uses —
+ * two implementations of "accept a follow" is two sets of counters to drift.
+ *
+ * Three failures, each a status the client can act on:
+ *
+ *   404 — `:id` is not an id at all
  *   403 — the edge exists but the caller is not its target. **Authorization
  *         reads the edge, never the request body.** Trusting a client-supplied
  *         id here would let anyone accept anyone's request.
- *   410 — the edge was still pending a moment ago and is gone now, because the
- *         requester cancelled while this user was reading the notification.
- *         Routine, and specifically not a 500.
+ *   410 — it was pending a moment ago and is gone now, because the requester
+ *         cancelled while this user was reading the notification. Routine, and
+ *         specifically not a 500.
  */
-export async function acceptRequest(req: Request, res: Response): Promise<Response> {
+async function actOnRequest(
+  req: Request,
+  res: Response,
+  decision: 'accepted' | 'declined',
+): Promise<Response> {
+  const verb = decision === 'accepted' ? 'accept' : 'decline';
   try {
     const id = req.params.id;
     if (!isObjectId(id)) return fail(res, 'Request not found', 404);
 
     const me = req.user!.userId;
-    const edge = await Follow.findById(id);
+    const edge = await Follow.findById(id).select('followerId followingId').lean();
     if (!edge) return fail(res, 'GONE: That request is no longer available', 410);
 
-    // Only the person being followed may accept.
+    // Only the person being followed may answer.
     if (String(edge.followingId) !== me) {
       return fail(res, 'You cannot act on that request', 403);
     }
-    if (edge.status === 'accepted') {
-      // Already accepted — idempotent, not an error.
-      return ok(res, { status: 'accepted' });
-    }
 
-    const result = await withTxn(async (session) => {
-      // Conditional: if a concurrent cancel already removed it, matchedCount is
-      // 0 and we must not touch the counters.
-      const updated = await Follow.updateOne(
-        { _id: edge._id, status: 'pending' },
-        { $set: { status: 'accepted', respondedAt: new Date() } },
-        session ? { session } : {},
-      );
-      if (updated.matchedCount === 0) return null;
-
-      // The request leaves the pending queue and becomes a real follow.
-      await applyCounters('pending', String(edge.followerId), me, -1, session);
-      await applyCounters('accepted', String(edge.followerId), me, +1, session);
-      return true;
-    });
-
-    if (!result) return fail(res, 'GONE: That request is no longer available', 410);
-
-    await Notification.updateOne(
-      { userId: me, followId: edge._id, type: 'follow_request' },
-      { $set: { actionState: 'accepted', read: true } },
-    );
-
-    // The requester's half of the loop.
-    await notify({
-      userId: edge.followerId,
-      type: 'follow_accepted',
-      fromUserId: me,
-      followId: edge._id,
-    });
-
-    return ok(res, { status: 'accepted' });
+    await resolveFollow(String(edge.followerId), me, decision, id);
+    return ok(res, { status: decision });
   } catch (err) {
-    console.error('acceptRequest error:', err);
-    return fail(res, 'Could not accept that request', 500);
+    if (err instanceof RequestGoneError) {
+      return fail(res, 'GONE: That request is no longer available', 410);
+    }
+    if (err instanceof FollowForbiddenError) return fail(res, "Can't act on that request", 403);
+    console.error(`${verb}Request error:`, err);
+    return fail(res, `Could not ${verb} that request`, 500);
   }
 }
+
+/** POST /api/follow-requests/:id/accept — `:id` is the Follow edge. */
+export const acceptRequest = (req: Request, res: Response): Promise<Response> =>
+  actOnRequest(req, res, 'accepted');
 
 /**
  * POST /api/follow-requests/:id/decline
  *
- * Deletes the edge and marks the card declined. The requester is **not**
- * notified: telling someone they were rejected is hostile and creates pressure
- * to ask again. Nothing stops them re-requesting later — that is what blocking
- * is for, not a decline record.
+ * The card stays in the list showing "Declined" rather than disappearing — a
+ * row vanishing under the user's finger is disorienting — which is why the
+ * outcome is held on the notification and not read back from the edge. The
+ * edge is deleted.
  */
-export async function declineRequest(req: Request, res: Response): Promise<Response> {
-  try {
-    const id = req.params.id;
-    if (!isObjectId(id)) return fail(res, 'Request not found', 404);
-
-    const me = req.user!.userId;
-    const edge = await Follow.findById(id);
-    if (!edge) return fail(res, 'GONE: That request is no longer available', 410);
-
-    if (String(edge.followingId) !== me) {
-      return fail(res, 'You cannot act on that request', 403);
-    }
-
-    const removed = await withTxn(async (session) => {
-      const del = await Follow.deleteOne(
-        { _id: edge._id, status: 'pending' },
-        session ? { session } : {},
-      );
-      if (del.deletedCount === 0) return false;
-      await applyCounters('pending', String(edge.followerId), me, -1, session);
-      return true;
-    });
-
-    if (!removed) return fail(res, 'GONE: That request is no longer available', 410);
-
-    // The row stays in the list showing "Declined" — a row vanishing under the
-    // user's finger is disorienting.
-    await Notification.updateOne(
-      { userId: me, followId: edge._id, type: 'follow_request' },
-      { $set: { actionState: 'declined', read: true } },
-    );
-
-    return ok(res, { status: 'declined' });
-  } catch (err) {
-    console.error('declineRequest error:', err);
-    return fail(res, 'Could not decline that request', 500);
-  }
-}
+export const declineRequest = (req: Request, res: Response): Promise<Response> =>
+  actOnRequest(req, res, 'declined');

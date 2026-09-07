@@ -53,6 +53,19 @@ const config: Config = {
         success: '#5fbf95',
         warning: '#d8b45c',
         danger: '#d9707a',
+
+        /* --- direct messages only: the scoped exception to the one-hue rule.
+               Mirrors the --chat-* tokens in globals.css; see the note there
+               for why a chat thread is the one surface that needs near-neutral
+               ground. Valid inside .msg-shell and nowhere else. --- */
+        chat: {
+          bg: '#0a0a0f',
+          surface: '#16161f',
+          'surface-raised': '#1f1f2b',
+          border: 'rgba(255,255,255,0.08)',
+          text: '#ededf2',
+          'text-muted': '#8a8a9a',
+        },
       },
       fontFamily: {
         ui: ['var(--font-inter)', 'Inter', 'system-ui', 'sans-serif'],

@@ -176,12 +176,21 @@ async function run() {
   check('own profile reports isMe', ownProfile.body?.data?.user?.isMe === true);
 
   const followRes = await api()
-    .post(`/api/users/${adaId}/follow`)
+    .post(`/api/users/${adaId}/follow-request`)
     .set('Authorization', `Bearer ${lin}`);
-  check('follow succeeds', followRes.status === 200, `got ${followRes.status}`);
+  check('follow request succeeds', followRes.status === 200, `got ${followRes.status}`);
+  check('following requires approval even for public accounts', followRes.body?.data?.status === 'requested');
 
   // Idempotency matters: a double tap must not inflate the count.
-  await api().post(`/api/users/${adaId}/follow`).set('Authorization', `Bearer ${lin}`);
+  await api().post(`/api/users/${adaId}/follow-request`).set('Authorization', `Bearer ${lin}`);
+  const pendingFollow = await api().get('/api/users/ada').set('Authorization', `Bearer ${lin}`);
+  check('pending requests show Requested', pendingFollow.body?.data?.user?.followRequested === true);
+  check('pending requests do not count as followers', pendingFollow.body?.data?.user?.followerCount === 0);
+
+  const acceptedFollow = await api()
+    .post(`/api/users/${linId}/accept-follow`)
+    .set('Authorization', `Bearer ${ada}`);
+  check('accepting creates the follow', acceptedFollow.body?.data?.status === 'following');
   const afterFollow = await api().get('/api/users/ada').set('Authorization', `Bearer ${lin}`);
   check('following is reflected', afterFollow.body?.data?.user?.isFollowing === true);
   check(
@@ -324,10 +333,10 @@ async function run() {
 
   section('Messaging');
 
-  // Messaging requires a mutual follow. Only lin → ada exists above, so ada
-  // follows back here rather than in the follows section, where an extra edge
-  // would move the counts those checks assert on.
-  await api().post(`/api/users/${linId}/follow`).set('Authorization', `Bearer ${ada}`);
+  // Messaging requires two accepted follows. Lin accepts Ada's follow-back
+  // request here so the additional edge does not change earlier count checks.
+  await api().post(`/api/users/${linId}/follow-request`).set('Authorization', `Bearer ${ada}`);
+  await api().post(`/api/users/${adaId}/accept-follow`).set('Authorization', `Bearer ${lin}`);
 
   const sent = await api()
     .post(`/api/messages/${linId}/send`)
@@ -360,6 +369,78 @@ async function run() {
   const thread = await api().get(`/api/messages/${adaId}`).set('Authorization', `Bearer ${lin}`);
   check('thread returns the messages', thread.body?.data?.messages?.length === 1);
   check('thread returns the other participant', thread.body?.data?.user?.username === 'ada');
+  check('a text message reports its kind', thread.body?.data?.messages?.[0]?.kind === 'text');
+  check('a text message carries no media url', thread.body?.data?.messages?.[0]?.mediaUrl === null);
+
+  /* --- attachments -------------------------------------------------------- */
+
+  // A 1×1 PNG: the smallest payload that is genuinely a valid image data URL,
+  // so a rejection here can only come from the upload not being configured.
+  const PNG_1PX =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  const junkPhoto = await api()
+    .post(`/api/messages/${linId}/send`)
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ kind: 'image', media: 'data:text/html;base64,PHNjcmlwdD4=' });
+  check('a non-image data URL is refused', junkPhoto.status === 422, `got ${junkPhoto.status}`);
+
+  const junkVoice = await api()
+    .post(`/api/messages/${linId}/send`)
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ kind: 'audio', media: 'not-a-data-url' });
+  check('a malformed recording is refused', junkVoice.status === 422, `got ${junkVoice.status}`);
+
+  const emptyMedia = await api()
+    .post(`/api/messages/${linId}/send`)
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ kind: 'image' });
+  check('a media send with no payload is refused', emptyMedia.status === 422);
+
+  // Cloudinary is deliberately unconfigured in this suite, so a *valid* photo
+  // must degrade to a readable 503 rather than throwing a 500.
+  const photoSend = await api()
+    .post(`/api/messages/${linId}/send`)
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ kind: 'image', media: PNG_1PX });
+  check('a valid photo 503s without Cloudinary', photoSend.status === 503, `got ${photoSend.status}`);
+  check(
+    'the photo 503 explains itself',
+    typeof photoSend.body?.error === 'string' && photoSend.body.error.length > 0,
+  );
+
+  // The codec parameter MediaRecorder attaches must survive validation — this
+  // is the shape every real Chrome recording arrives in, and a pattern written
+  // for a bare `audio/webm` would reject every one of them.
+  const voiceSend = await api()
+    .post(`/api/messages/${linId}/send`)
+    .set('Authorization', `Bearer ${ada}`)
+    .send({ kind: 'audio', media: 'data:audio/webm;codecs=opus;base64,AAAAAAAA' });
+  check('a webm/opus recording passes validation', voiceSend.status === 503, `got ${voiceSend.status}`);
+
+  // The mutual-follow gate covers attachments too, and must run *before* the
+  // upload — otherwise a stranger could spend the operator's Cloudinary quota
+  // simply by being refused slowly. A 403 here rather than a 503 is the proof:
+  // 503 would mean the send had already reached the upload step.
+  const cyRes = await api()
+    .post('/api/auth/register')
+    .send({ email: 'cyrus@velvet.test', username: 'cyrus', displayName: 'Cyrus', password: 'password123' });
+  const cy = cyRes.body?.data?.token as string;
+  check('a third account registers', Boolean(cy), `got ${cyRes.status}`);
+  // Registered after the bulk verify above, so this one is still unverified —
+  // and an unverified sender 401s at the gate before the mutual check is even
+  // reached, which would make the assertion below pass for the wrong reason.
+  await User.updateMany({}, { $set: { emailVerified: true } });
+  const strangerPhoto = await api()
+    .post(`/api/messages/${adaId}/send`)
+    .set('Authorization', `Bearer ${cy}`)
+    .send({ kind: 'image', media: PNG_1PX });
+  check('a non-mutual photo is refused before upload', strangerPhoto.status === 403, `got ${strangerPhoto.status}`);
+
+  const afterMedia = await api()
+    .get(`/api/messages/${adaId}`)
+    .set('Authorization', `Bearer ${lin}`);
+  check('no rejected attachment reached the thread', afterMedia.body?.data?.messages?.length === 1);
 
   /* ----------------------------- notifications --------------------------- */
 
@@ -367,11 +448,11 @@ async function run() {
 
   const notifs = await api().get('/api/notifications').set('Authorization', `Bearer ${ada}`);
   check('notifications were generated', (notifs.body?.data?.notifications?.length ?? 0) > 0);
-  // 'follow' is deprecated — a public target now yields 'new_follower' and a
-  // private one 'follow_request'. Ada is public, so it is the former.
+  // 'follow' and 'new_follower' are both history: approval is now required of
+  // everyone, so the only card a follow raises is the request Ada answered.
   check(
-    'a follow notification exists',
-    notifs.body?.data?.notifications?.some((n: { type: string }) => n.type === 'new_follower'),
+    'a follow request notification exists',
+    notifs.body?.data?.notifications?.some((n: { type: string }) => n.type === 'follow_request'),
   );
   check('notifications carry an unread total', typeof notifs.body?.data?.unread === 'number');
 

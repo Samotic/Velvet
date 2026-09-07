@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { useToast } from '@/components/Toast';
 import { EmptyState, RowsSkeleton } from '@/components/ui/States';
+import { FollowRequestsSummary } from '@/components/notifications/FollowRequests';
 import { NotificationCard } from '@/components/notifications/NotificationCard';
 import { groupLabel, groupNotifications } from '@/components/notifications/aggregate';
 import type { Notification } from '@/lib/contentTypes';
@@ -96,6 +97,11 @@ function Notifications() {
           Notifications{unread > 0 && <em> · {unread}</em>}
         </h1>
       </div>
+
+      {/* One row standing in for the whole queue, above the feed and above
+          Mark all as read. Answering happens on its own screen, where the
+          requests have room to be judged. */}
+      <FollowRequestsSummary />
 
       {unread > 0 && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '18px 0 6px' }}>

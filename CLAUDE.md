@@ -109,11 +109,40 @@ Semantic — status contexts only: `--v-success` `#5FBF95` · `--v-warning`
 
 ### The permitted exceptions
 
-Two, and no others. The **semantic** colours above, and the **Google sign-in
-button** (`.btn-google` plus the four `fill` values on the G in
+Three, and no others.
+
+The **semantic** colours above, and the **Google sign-in button**
+(`.btn-google` plus the four `fill` values on the G in
 `components/auth/GoogleButton.tsx`) — Google's branding requires their mark on
 white, and a recoloured Google button reads as phishing. Both are requirements,
 not decoration, so the one-hue rule does not reach them.
+
+The third is the **direct-message thread**, which runs on six near-neutral
+`--chat-*` tokens instead of the indigo ramp:
+
+| Token | Hex | Use |
+| --- | --- | --- |
+| `--chat-bg` | `#0A0A0F` | The thread's scroll ground. |
+| `--chat-surface` | `#16161F` | Incoming bubbles, composer field, inbox rows. |
+| `--chat-surface-raised` | `#1F1F2B` | Header bar, hover, photo placeholder. |
+| `--chat-border` | `rgba(255,255,255,.08)` | Hairlines. |
+| `--chat-text` | `#EDEDF2` | Primary text, focus rings. |
+| `--chat-text-muted` | `#8A8A9A` | Timestamps, placeholders, meta. |
+
+Chat is the only surface in Velvet that stacks four planes in one column —
+page, bubble, composer field, hover. On the indigo ramp those four sit close
+enough in hue that nothing reads as figure against ground, and the screen goes
+purple-on-purple. Every other screen stacks two or three and the ramp separates
+them fine, which is why this exception does not generalise.
+
+`--chat-accent` is still `--v-accent`, and on that screen the accent appears in
+**exactly two places**: outgoing bubbles and the send button. Not the selected
+inbox row, not the unread dot, not the incoming bubble's border, and not the
+focus ring — all four used to, and all four now use `--chat-text`. If you add a
+third accent use to the thread, you have broken the rule the palette exists to
+serve.
+
+These tokens are valid inside `.msg-shell` and nowhere else.
 
 Composition happens through `rgba(var(--v-*-rgb), α)` — an alpha wash is still
 a token and never a raw hue. Keep each `*-rgb` triple in step with its hex.
@@ -296,6 +325,150 @@ Seams worth preserving:
   would make one user look like several to the presence tracker and multiply
   every broadcast.
 
+## The follow graph
+
+**Every follow is a request.** Pressing Follow asks; it does not connect. There
+is no public/private branch on that — `profileVisibility` governs who may *see*
+your content, not who may follow, and a target's setting never decides whether
+approval is needed. A single rule is why the button has three states everywhere
+instead of three states on some profiles and two on others.
+
+The edges live in their own collection (`Follow`), not in arrays on the user.
+An array can hold a member but not a *state*, and this needs `pending`; it also
+grows a popular account's document without bound, so their profile read drags
+their whole follower list along. `User.followers` / `following` survive as
+**confirmed-only mirrors** maintained beside the edge writes, because existing
+feed and messaging code reads them.
+
+```
+POST   /api/users/:id/follow-request   → { status: 'requested' | 'following' }
+POST   /api/users/:id/accept-follow    → { status: 'following' }
+POST   /api/users/:id/decline-follow   → { status: 'declined' }
+DELETE /api/users/:id/follow           → { status: 'not_following' }
+GET    /api/users/me/follow-requests   → { requests, total, nextCursor }
+```
+
+`:id` is always **the other person** — on accept and decline it names the
+requester, and the recipient comes from the session. There is no id a caller can
+supply that makes them the target of someone else's request.
+`POST /api/users/:id/follow` and `/api/follow-requests/:id/accept|decline`
+predate this and still work; the latter pair is addressed by *edge* id, which is
+what lets a notification card resolve the exact request it was raised for rather
+than the newest one from that person.
+
+- **`services/social.ts` owns every transition.** Controllers validate and
+  translate errors; they never write an edge, a counter or a notification
+  themselves. Two implementations of "accept a follow" is two sets of counters
+  to drift, which is what `notificationController` used to be.
+- **`createFollow` raises its own notification, inside the edge's
+  transaction.** A controller that also called `notify()` counted the row twice
+  and left the bell permanently one ahead of the list.
+- **All four writes are idempotent.** A double-tapped Follow reports the current
+  state as a success, and cancelling twice still answers `not_following` —
+  ending up in the state you asked for is what the user meant.
+- **Counters are denormalized and `$inc`d beside every edge write.**
+  `countDocuments()` on render gets slow exactly when an account gets popular.
+  `followerCount` counts **accepted edges only**: showing a pending request as a
+  follower would leak that someone asked. `scripts/reconcileCounters.ts` repairs
+  drift.
+- **A decline is silent and reversible.** The requester is never told — saying
+  so is hostile and creates pressure to ask again — and the edge is deleted so
+  they may ask later. The `FollowRequest` document is kept as history. Stopping
+  someone permanently is what blocking is for.
+- **Cancelling deletes the recipient's notification; declining keeps it**,
+  marked `actionState: 'declined'`. A withdrawn request must leave nothing to
+  act on, but a card the user just answered has to stay where their finger was.
+- **`withPairWrite` serializes a pair's transitions** so the flow is correct on
+  standalone Mongo, where `SUPPORTS_TRANSACTIONS=false` and `withTxn` is a
+  passthrough.
+
+On the client, `lib/users.ts` and `lib/notifications.ts` are the only modules
+that call these routes, and both announce through `lib/socialEvents.ts` after a
+write. `onNotificationsChange` is what keeps the navbar bell honest when a
+request is answered somewhere else on the page — without a subscriber the badge
+only corrects itself on the next poll.
+
+The queue lives on **its own screen**, `/notifications/requests`, reached from a
+single collapsed row at the top of `/notifications` and from your own profile.
+A request is the one notification that is a task, and a queue of twelve inlined
+above the feed buries everything else on the page rather than surfacing itself.
+`FollowRequests.tsx` exports both halves — `FollowRequestsSummary` for the row
+and `FollowRequestsList` for the screen — over **one hook**, so the row's count
+and the screen's list cannot disagree about how many are waiting.
+
+The feed still renders its own card per request, with the same Accept and
+Decline: `aggregate.ts` never collapses `follow_request` into a group, because
+that would hide an action behind a tap. Both surfaces resolve through the same
+endpoint, so whichever is used the other settles from the server.
+`verify:follow` covers the whole flow against a real database.
+
+## Messaging
+
+The thread is four components, not one. `Thread` owns data, sockets and scroll;
+`MessageGroup` owns everything that appears once per *turn* rather than once per
+message; `Composer` owns input and attachment; `VoiceNote` owns playback.
+`lib/messageGroups.ts` holds the grouping rules as plain data so they are
+testable without a renderer — in a flat map over messages, "one avatar per
+group" degenerates into index arithmetic.
+
+- **Consecutive messages from one sender within 5 minutes are one group.** A
+  group also breaks on a calendar-day change, which is not redundant: two
+  messages four minutes apart can still straddle midnight, and without the check
+  the date divider lands *inside* a group instead of between two.
+- **Avatar, sender name and timestamp render once per group**, and the avatar
+  aligns to the group's *last* message. Every other incoming row reserves its
+  width so the bubbles above stay flush instead of stepping left.
+- **Corner radii carry the grouping**: 16px on the outer corners of the leading
+  and trailing bubbles, 4px where bubbles meet. That is what makes a stack read
+  as one utterance rather than three unrelated cards.
+- **`.bubble` dimming must use `filter`, not `opacity`.** `.bubble` runs `msgIn`
+  with `fill-mode: both`, so the animation's final `opacity: 1` persists and
+  outranks any normal `opacity` declaration — a plain `opacity: .6` on a failed
+  bubble computes to 1 and never dims.
+- **A failed send keeps its place** at 60%, with a retry beneath it. It is never
+  removed from the list.
+- **The DM composer is `.chat-*`, the advisor's is `.composer`.** They were one
+  set of rules and are now two, deliberately: the two screens have different
+  measures and different chrome, and sharing meant every DM change silently
+  restyled the advisor.
+
+A message is **text, a photo or a voice note** — `kind` on the `Message` model
+says which, and it is stored rather than inferred. A renderer that branches on
+`mediaUrl != null` cannot tell a photo from a recording, and every kind added
+later makes that guess worse.
+
+Media is uploaded to Cloudinary and only the URL is stored; Mongo holds the
+record of the conversation, never the bytes. Both paths travel as a **base64
+data URL on the JSON body**, the same transport `POST /api/users/me/photo`
+already uses — no multipart dependency, and the payload is pattern-checked
+before a byte reaches Cloudinary.
+
+- **The media data URL must never go through `clean()`.** `sanitizeText` strips
+  `data:` as an active URI scheme, which is right for prose and fatal here: it
+  would empty every upload before it was read. Only the text branch is
+  user-authored prose, so only it is sanitised.
+- **Voice notes upload with `resource_type: 'video'`.** Cloudinary has no
+  separate audio bucket. As `'raw'` the bytes store but the duration and the
+  streaming URL are both lost.
+- **`mediaDuration` is measured server-side, not claimed by the client.** A
+  MediaRecorder webm carries no duration in its header, so the browser reads
+  `audio.duration` as `Infinity` until the clip is played through. Cloudinary
+  probes the file at upload, and that number is what the player trusts.
+- **Message media gets no deterministic `public_id`.** Avatars do, so a
+  replacement overwrites in place — doing the same here would make each new
+  photo silently overwrite the last one in the thread.
+- **The mutual-follow gate and the rate limit both run before the upload.** A
+  check that runs afterwards has already paid for the request it was meant to
+  prevent. Attachments are capped per user (20/min, 200/hour) while text is
+  not: text costs a document, media costs storage and egress on an account with
+  no revenue behind it — the same reasoning that makes `AI_FREE_DAILY_MESSAGES`
+  load-bearing.
+- **`previewFor()` supplies the inbox row and the email preview.** A media
+  message has no text, so without it the inbox renders a blank row.
+- Recording needs a **secure context** — `getUserMedia` is unavailable on plain
+  http outside localhost. The composer hides the mic where it cannot work
+  rather than offering a dead button.
+
 ## Conventions
 
 - Server components by default; `'use client'` where state, storage or the
@@ -316,7 +489,12 @@ Seams worth preserving:
 ## Removed
 
 **Watch Together is gone** — no rooms, no Agora, no playback sync. Socket.io
-remains, scoped to text messaging and notification pushes only. Its replacement
+remains, scoped to messaging and notification pushes only: it carries message
+records and typing state, never a media stream. Messages themselves may be
+text, a photo or a voice note (see **Messaging** above), but that media is an
+uploaded file with a URL, not a live connection — **there are no voice or video
+calls**, and adding them would mean reintroducing the WebRTC/TURN infrastructure
+this decision removed. Its replacement
 as the social heart of the product is the AI Advisor.
 
 **Payments are gone** — no Stripe, no checkout, no `/pro` page, no paid tier.

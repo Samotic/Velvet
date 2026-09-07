@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
-import { getUnreadCount, markNotificationsRead } from '@/lib/notifications';
+import { getUnreadCount, markNotificationsRead, onNotificationsChange } from '@/lib/notifications';
 import { timeAgo } from '@/lib/format';
 import type { Notification } from '@/lib/contentTypes';
 import { onSocket } from '@/lib/socket';
@@ -145,6 +145,18 @@ export function TopNav() {
       offMsg();
     };
   }, [isAuthenticated, pathname]);
+
+  /**
+   * Anything that resolves a notification elsewhere in the app — accepting a
+   * follow request, Mark all as read — announces it, and the bell recounts.
+   *
+   * Without this the badge only corrects itself on the next poll, so the count
+   * sits one high while the row that produced it is visibly answered.
+   */
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    return onNotificationsChange(() => void loadCounts());
+  }, [isAuthenticated, loadCounts]);
 
   // Entering the inbox clears the envelope badge; the thread marks them read.
   useEffect(() => {

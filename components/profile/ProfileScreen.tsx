@@ -6,32 +6,31 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { PosterCard } from '@/components/PosterCard';
 import { useAuth } from '@/components/auth/AuthProvider';
-import { useToast } from '@/components/Toast';
 import { Avatar } from '@/components/ui/Avatar';
 import { Crown } from '@/components/icons';
 import { EmptyState, Loading, PosterGridSkeleton, RowsSkeleton } from '@/components/ui/States';
-import { ApiError } from '@/lib/api';
 import type { PublicProfile } from '@/lib/authTypes';
 import { getUserActivity } from '@/lib/catalog';
 import type { ActivityItem, Review, WatchlistItem, WatchStats } from '@/lib/contentTypes';
 import { hrefFor, WATCH_STATUS_LABEL, type WatchStatus } from '@/lib/contentTypes';
 import { compactCount, longDate, stars, timeAgo } from '@/lib/format';
 import { genderLabel, moodLabel } from '@/lib/onboarding';
+import { onSocket } from '@/lib/socket';
 import {
-  followUser,
   getProfile,
   getProfileRatings,
   getProfileStats,
   getProfileWatchlist,
-  unfollowUser,
+  onFollowChange,
 } from '@/lib/users';
 
+import { FollowButton } from './FollowButton';
+import { FollowRequestBanner } from './FollowRequestBanner';
 import { FollowModal } from './FollowModal';
 
 type Tab = 'overview' | 'watchlist' | 'reviews';
 
 export function ProfileScreen({ username }: { username: string }) {
-  const toast = useToast();
   const { user: me } = useAuth();
 
   const [profile, setProfile] = useState<PublicProfile | null>(null);
@@ -48,23 +47,52 @@ export function ProfileScreen({ username }: { username: string }) {
 
   /* --- profile ---------------------------------------------------------- */
 
+  const loadProfile = useCallback(
+    (signal?: AbortSignal) => {
+      getProfile(username, signal)
+        .then((p) => {
+          setProfile(p);
+          setFollowing(p.isFollowing);
+        })
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          setMissing(true);
+        });
+    },
+    [username],
+  );
+
   useEffect(() => {
     const controller = new AbortController();
     setProfile(null);
     setMissing(false);
-
-    getProfile(username, controller.signal)
-      .then((p) => {
-        setProfile(p);
-        setFollowing(p.isFollowing);
-      })
-      .catch((err) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setMissing(true);
-      });
-
+    loadProfile(controller.signal);
     return () => controller.abort();
-  }, [username]);
+  }, [loadProfile]);
+
+  /**
+   * The relationship can change from somewhere other than this screen: they
+   * accept your request, or you answer theirs from the bell while their profile
+   * is open behind it. `follow:changed` is the server's half and
+   * `onFollowChange` the same tab's; both re-read rather than patching state,
+   * because the server is the only thing that knows which way the edge went.
+   *
+   * Deliberately no `setProfile(null)` here — that is the first-load spinner,
+   * and flashing it under someone reading a profile is worse than a stale
+   * count for one request.
+   */
+  useEffect(() => {
+    const id = profile?.id;
+    if (!id) return;
+    const offSocket = onSocket('follow:changed', (payload) => {
+      if ((payload as { userId?: string })?.userId === id) loadProfile();
+    });
+    const offLocal = onFollowChange(() => loadProfile());
+    return () => {
+      offSocket();
+      offLocal();
+    };
+  }, [profile?.id, loadProfile]);
 
   /* --- tab data --------------------------------------------------------- */
 
@@ -95,74 +123,27 @@ export function ProfileScreen({ username }: { username: string }) {
   /**
    * Follow → Requested → Following, and back.
    *
-   * Three states rather than two, because a private account turns the press
-   * into a request that has not been granted yet. Pressing "Requested"
-   * withdraws it — the same DELETE that unfollows.
-   *
-   * The optimistic follower count only moves for an *accepted* follow. A
-   * pending request is not a follower, so incrementing it there would show a
-   * number the server disagrees with the moment the page reloads.
+   * `FollowButton` owns the three states and the unfollow confirmation; this
+   * only keeps the numbers around it honest. The follower count moves **only**
+   * for an accepted follow — a pending request is not a follower, and counting
+   * it there would show a figure the server disagrees with on the next reload.
    */
-  const toggleFollow = useCallback(async () => {
-    if (!profile) return;
-
-    const wasFollowing = following;
-    const wasRequested = profile.followRequested;
-    const leaving = wasFollowing || wasRequested;
-
-    if (leaving) {
-      setFollowing(false);
-      setProfile((p) =>
-        p
-          ? {
-              ...p,
-              followRequested: false,
-              followerCount: p.followerCount - (wasFollowing ? 1 : 0),
-            }
-          : p,
-      );
-      try {
-        await unfollowUser(profile.id);
-      } catch (err) {
-        setFollowing(wasFollowing);
-        setProfile((p) =>
-          p
-            ? {
-                ...p,
-                followRequested: wasRequested,
-                followerCount: p.followerCount + (wasFollowing ? 1 : 0),
-              }
-            : p,
-        );
-        toast.bad(err instanceof ApiError ? err.message : 'Could not update follow');
-      }
-      return;
-    }
-
-    // The server decides accepted vs pending; assume the common case and
-    // correct from the response.
-    setFollowing(true);
-    setProfile((p) => (p ? { ...p, followerCount: p.followerCount + 1 } : p));
-    try {
-      const status = await followUser(profile.id);
-      const accepted = status === 'accepted';
-      setFollowing(accepted);
-      setProfile((p) =>
-        p
-          ? {
-              ...p,
-              followRequested: !accepted,
-              // Undo the optimistic bump if it turned out to be a request.
-              followerCount: p.followerCount - (accepted ? 0 : 1),
-            }
-          : p,
-      );
-    } catch (err) {
-      setFollowing(false);
-      setProfile((p) => (p ? { ...p, followerCount: p.followerCount - 1 } : p));
-      toast.bad(err instanceof ApiError ? err.message : 'Could not update follow');
-    }
-  }, [following, profile, toast]);
+  const handleFollowChange = useCallback((next: 'none' | 'pending' | 'accepted') => {
+    const accepted = next === 'accepted';
+    setFollowing(accepted);
+    setProfile((p) =>
+      p
+        ? {
+            ...p,
+            isFollowing: accepted,
+            followRequested: next === 'pending',
+            // `p.isFollowing` is this function's own last word, so the delta is
+            // against what is on screen rather than what the page loaded with.
+            followerCount: p.followerCount + (accepted ? 1 : 0) - (p.isFollowing ? 1 : 0),
+          }
+        : p,
+    );
+  }, []);
 
   if (missing) {
     return (
@@ -196,7 +177,14 @@ export function ProfileScreen({ username }: { username: string }) {
               </span>
             )}
           </h1>
-          <div className="profile-handle">@{profile.username}</div>
+          <div className="profile-handle">
+            @{profile.username}
+            {/* Only worth saying while it is one-way. Once you follow back it
+                is just "Following", and the badge becomes noise. */}
+            {!isMe && profile.isFollowedBy && !following && (
+              <span className="follows-you">Follows you</span>
+            )}
+          </div>
 
           {profile.bio && <p className="profile-bio">{profile.bio}</p>}
 
@@ -224,6 +212,15 @@ export function ProfileScreen({ username }: { username: string }) {
               <span className="l">Followers</span>
             </button>
           </div>
+
+          {/* Your own profile only: the queue has its own screen, so this is a
+              signpost to it rather than a second place to answer them. */}
+          {isMe && (profile.pendingRequestCount ?? 0) > 0 && (
+            <Link href="/notifications/requests" className="profile-requests">
+              {compactCount(profile.pendingRequestCount ?? 0)}{' '}
+              {profile.pendingRequestCount === 1 ? 'follow request' : 'follow requests'}
+            </Link>
+          )}
         </div>
 
         <div className="profile-actions">
@@ -233,13 +230,13 @@ export function ProfileScreen({ username }: { username: string }) {
             </Link>
           ) : (
             <>
-              <button
-                type="button"
-                className={following || profile.followRequested ? 'btn-outline on' : 'btn-fill'}
-                onClick={() => void toggleFollow()}
-              >
-                {following ? 'Following ✓' : profile.followRequested ? 'Requested' : 'Follow'}
-              </button>
+              <FollowButton
+                userId={profile.id}
+                username={profile.username}
+                isFollowing={following}
+                requested={profile.followRequested}
+                onChange={handleFollowChange}
+              />
               {/* Mutual follows only. `following` is the local optimistic
                   state, so the button appears the instant you follow back
                   someone who already follows you. */}
@@ -252,6 +249,24 @@ export function ProfileScreen({ username }: { username: string }) {
           )}
         </div>
       </header>
+
+      {/* Below the hero, above the tabs, in the page's own container — so it
+          shares their left edge and never covers the identity block. They
+          asked first, and answering it here is what someone standing on this
+          profile actually wants; the bell is not where people look. */}
+      {!isMe && profile.requestedYou && (
+        <FollowRequestBanner
+          requests={[
+            {
+              id: profile.id,
+              username: profile.username,
+              displayName: profile.displayName,
+              profilePhoto: profile.profilePhoto,
+            },
+          ]}
+          onResolved={() => loadProfile()}
+        />
+      )}
 
       {profile.pinnedFilms.length > 0 && (
         <section>

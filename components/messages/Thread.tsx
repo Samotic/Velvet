@@ -1,55 +1,83 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@/components/auth/AuthProvider';
 import { useToast } from '@/components/Toast';
-import { ArrowLeft, Send, Smile } from '@/components/icons';
+import { ArrowLeft } from '@/components/icons';
 import { Avatar } from '@/components/ui/Avatar';
-import { Loading } from '@/components/ui/States';
 import { ApiError, api } from '@/lib/api';
 import type { PublicProfile } from '@/lib/authTypes';
-import type { DirectMessage } from '@/lib/contentTypes';
-import { compactCount, messageGroupLabel } from '@/lib/format';
-import { getThread, markThreadRead, sendMessage } from '@/lib/messages';
+import { type ThreadMessage, groupMessages } from '@/lib/messageGroups';
+import { getThread, markThreadRead, sendMessage, sendPhoto, sendVoiceNote } from '@/lib/messages';
 import { emitSocket, onSocket } from '@/lib/socket';
 
-/** A small, dependency-free emoji set — enough to react, not a full picker. */
-const EMOJI = [
-  '😀', '😂', '🥹', '😍', '🤩', '😎', '🤔', '😴',
-  '👍', '🙏', '👏', '🔥', '💯', '❤️', '💔', '✨',
-  '🎬', '🍿', '🎮', '📺', '⭐', '😱', '😭', '🤯',
-];
+import { Composer } from './Composer';
+import { MessageGroup } from './MessageGroup';
+import { useRecorder } from './useRecorder';
 
 /** How long after the last keystroke we tell the other end typing stopped. */
 const TYPING_IDLE = 1800;
+
+/**
+ * Within this many pixels of the bottom, the thread is "being read live" and
+ * new messages scroll into view. Above it the reader is looking at history and
+ * the viewport must not be yanked out from under them.
+ */
+const STICK_THRESHOLD = 120;
+
+/** Three bubbles at alternating edges. No shimmer — a thread is not a feed. */
+function ThreadSkeleton() {
+  return (
+    <div className="thread-inner" aria-hidden="true">
+      {['in', 'out', 'in'].map((side, i) => (
+        <div className={`msg-group ${side}`} key={i}>
+          <div className="msg-row">
+            {side === 'in' && <div className="msg-gutter" />}
+            <div className="bubble-skeleton" style={{ width: i === 1 ? '38%' : '52%' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function Thread({ userId }: { userId: string }) {
   const toast = useToast();
   const { user: me } = useAuth();
 
-  const [messages, setMessages] = useState<DirectMessage[] | null>(null);
+  const [messages, setMessages] = useState<ThreadMessage[] | null>(null);
   const [other, setOther] = useState<PublicProfile | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [theyType, setTheyType] = useState(false);
-  const [showEmoji, setShowEmoji] = useState(false);
   const [following, setFollowing] = useState(false);
   // Starts open so the composer doesn't flash shut for the ordinary case; the
   // server's verdict lands a moment later, and the server is what enforces it.
   const [canMessage, setCanMessage] = useState(true);
 
   const logRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingSent = useRef(false);
+  /** Whether the log is pinned to the bottom. Updated on every scroll. */
+  const stick = useRef(true);
+
+  /**
+   * The ceiling can end a recording at any moment, and the sender is defined
+   * further down this component. A ref keeps the hook's dependency on it stable
+   * instead of reordering the whole body around a two-minute timer.
+   */
+  const sendClipRef = useRef<(clip: Blob | null) => void>(() => {});
+  const recorder = useRecorder({ onAutoStop: (clip) => sendClipRef.current(clip) });
 
   /* --- load ------------------------------------------------------------- */
 
   useEffect(() => {
     const controller = new AbortController();
     setMessages(null);
+    stick.current = true;
 
     getThread(userId, controller.signal)
       .then(({ messages: list, user, canMessage: allowed }) => {
@@ -72,7 +100,7 @@ export function Thread({ userId }: { userId: string }) {
 
   useEffect(() => {
     const offNew = onSocket('message:new', (raw) => {
-      const m = raw as DirectMessage;
+      const m = raw as ThreadMessage;
       // Only the open thread's traffic; the navbar handles the rest.
       if (m.senderId !== userId && m.receiverId !== userId) return;
 
@@ -101,13 +129,27 @@ export function Thread({ userId }: { userId: string }) {
     };
   }, [userId]);
 
-  // Stick to the bottom as the conversation grows.
+  /* --- scroll ----------------------------------------------------------- */
+
+  /**
+   * Follow the conversation only while the reader is already at the bottom.
+   *
+   * An unconditional scroll-to-bottom is why chat apps snatch the view away
+   * mid-sentence when a message lands: the person reading yesterday's history
+   * did not ask to be moved.
+   */
   useEffect(() => {
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages, theyType]);
 
-  // Make sure we never leave the other end with a stuck "is typing…".
+  const onScroll = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD;
+  }, []);
+
+  // Never leave the other end with a stuck "is typing…".
   useEffect(
     () => () => {
       if (typingTimer.current) clearTimeout(typingTimer.current);
@@ -137,32 +179,138 @@ export function Thread({ userId }: { userId: string }) {
 
   /* --- sending ---------------------------------------------------------- */
 
+  /** Appends whatever the server saved, unless the socket echo beat us to it. */
+  const absorb = useCallback((saved: ThreadMessage) => {
+    setMessages((prev) => {
+      if (!prev) return [saved];
+      return prev.some((x) => x.id === saved.id) ? prev : [...prev, saved];
+    });
+  }, []);
+
+  /**
+   * Sends text optimistically.
+   *
+   * The bubble appears immediately with a temporary id and is swapped for the
+   * server's copy on success. On failure it stays exactly where it is, marked
+   * failed — the message the user wrote is not thrown away because a request
+   * did not land.
+   */
+  const deliver = useCallback(
+    async (text: string, tempId: string) => {
+      try {
+        const saved = await sendMessage(userId, text);
+        setMessages((prev) =>
+          (prev ?? []).some((x) => x.id === saved.id)
+            ? (prev ?? []).filter((x) => x.id !== tempId)
+            : (prev ?? []).map((x) => (x.id === tempId ? saved : x)),
+        );
+      } catch (err) {
+        setMessages((prev) =>
+          (prev ?? []).map((x) => (x.id === tempId ? { ...x, sendState: 'failed' as const } : x)),
+        );
+        if (err instanceof ApiError && err.status === 403) toast.bad(err.message);
+      }
+    },
+    [userId, toast],
+  );
+
   async function send() {
     const text = draft.trim();
     if (!text || sending) return;
 
     setDraft('');
-    setShowEmoji(false);
     setSending(true);
+    stick.current = true;
 
     if (typingSent.current) {
       emitSocket('typing:stop', { to: userId });
       typingSent.current = false;
     }
 
+    const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setMessages((prev) => [
+      ...(prev ?? []),
+      {
+        id: tempId,
+        conversationId: '',
+        senderId: me?.id ?? '',
+        receiverId: userId,
+        kind: 'text',
+        text,
+        mediaUrl: null,
+        mediaDuration: null,
+        mediaWidth: null,
+        mediaHeight: null,
+        read: false,
+        createdAt: new Date().toISOString(),
+        sendState: 'sending',
+      },
+    ]);
+
+    await deliver(text, tempId);
+    setSending(false);
+  }
+
+  /** Re-sends a failed bubble in place, reusing its slot rather than adding one. */
+  const retry = useCallback(
+    (m: ThreadMessage) => {
+      setMessages((prev) =>
+        (prev ?? []).map((x) => (x.id === m.id ? { ...x, sendState: 'sending' as const } : x)),
+      );
+      void deliver(m.text, m.id);
+    },
+    [deliver],
+  );
+
+  async function onPickPhoto(file: File | undefined) {
+    if (!file || attaching) return;
+    setAttaching(true);
+    stick.current = true;
     try {
-      const saved = await sendMessage(userId, text);
-      setMessages((prev) => {
-        if (!prev) return [saved];
-        return prev.some((x) => x.id === saved.id) ? prev : [...prev, saved];
-      });
+      absorb(await sendPhoto(userId, file));
     } catch (err) {
-      setDraft(text);
-      toast.bad(err instanceof ApiError ? err.message : 'Message not sent');
+      toast.bad(err instanceof ApiError || err instanceof Error ? err.message : 'Photo not sent');
     } finally {
-      setSending(false);
-      inputRef.current?.focus();
+      setAttaching(false);
     }
+  }
+
+  /**
+   * Uploads a finished clip. Shared by the two ways recording ends — the user
+   * pressing send, and the recorder hitting its two-minute ceiling — so a clip
+   * that ran the full duration is sent rather than silently dropped.
+   */
+  const sendClip = useCallback(
+    async (clip: Blob | null) => {
+      if (!clip || clip.size === 0) return;
+      setAttaching(true);
+      stick.current = true;
+      try {
+        absorb(await sendVoiceNote(userId, clip));
+      } catch (err) {
+        toast.bad(
+          err instanceof ApiError || err instanceof Error ? err.message : 'Voice message not sent',
+        );
+      } finally {
+        setAttaching(false);
+      }
+    },
+    [absorb, toast, userId],
+  );
+
+  useEffect(() => {
+    sendClipRef.current = (clip) => void sendClip(clip);
+  }, [sendClip]);
+
+  /** Starts recording, or ends the one in progress and sends it. */
+  async function onVoiceNote() {
+    if (recorder.recording) {
+      await sendClip(await recorder.stop());
+      return;
+    }
+
+    if (attaching) return;
+    if (!(await recorder.start())) toast.bad('Velvet could not reach your microphone');
   }
 
   async function toggleFollow() {
@@ -178,145 +326,100 @@ export function Thread({ userId }: { userId: string }) {
     }
   }
 
-  if (messages === null) return <div className="msg-thread"><Loading /></div>;
+  const groups = useMemo(() => groupMessages(messages ?? [], me?.id), [messages, me?.id]);
+  const profileHref = other ? `/profile/${other.username}` : undefined;
 
   return (
     <div className="msg-thread">
+      {/* Sibling of the scroll container, not inside it. */}
       <div className="thread-head">
         {/* Back only matters on phones, where the inbox is a separate screen. */}
-        <Link
-          href="/messages"
-          className="icon-action"
-          aria-label="Back to conversations"
-          style={{ display: 'flex' }}
-        >
+        <Link href="/messages" className="chat-icon" aria-label="Back to conversations">
           <ArrowLeft />
         </Link>
 
-        <Avatar
-          src={other?.profilePhoto}
-          name={other?.displayName}
-          href={other ? `/profile/${other.username}` : undefined}
-        />
+        <Avatar src={other?.profilePhoto} name={other?.displayName} href={profileHref} />
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <Link href={other ? `/profile/${other.username}` : '#'} className="thread-name">
+        <div className="thread-id">
+          <Link href={profileHref ?? '#'} className="thread-name">
             {other?.displayName ?? 'Conversation'}
           </Link>
-          <div className="thread-sub">
-            {other ? `${compactCount(other.followerCount)} followers` : ''}
-          </div>
+          {/*
+            Presence would go here. Velvet tracks none — no lastSeen on the user
+            model, nothing in the socket layer — so this line renders nothing
+            rather than a follower count, which is not a fact about a
+            conversation, or a placeholder pretending to be status.
+          */}
         </div>
 
         {other && !other.isMe && (
           <button
             type="button"
-            className={`btn-outline${following ? ' on' : ''}`}
+            className={`btn-ghost${following ? ' on' : ''}`}
             onClick={() => void toggleFollow()}
           >
-            {following ? 'Following ✓' : 'Follow'}
+            {following ? 'Following' : 'Follow'}
           </button>
         )}
       </div>
 
-      <div className="thread-log" ref={logRef}>
-        {messages.length === 0 && (
-          <div className="empty" style={{ margin: 'auto' }}>
-            <div className="empty-title">Say something</div>
-            <div className="empty-text">
-              This is the start of your conversation with {other?.displayName ?? 'them'}.
-            </div>
+      <div className="thread-log" ref={logRef} onScroll={onScroll}>
+        {messages === null ? (
+          <ThreadSkeleton />
+        ) : (
+          <div className="thread-inner">
+            {messages.length === 0 && (
+              <div className="thread-empty">
+                <Avatar
+                  src={other?.profilePhoto}
+                  name={other?.displayName}
+                  size="lg"
+                  href={profileHref}
+                />
+                <div className="thread-empty-name">{other?.displayName ?? 'This person'}</div>
+                <p className="thread-empty-line">Send a message to start the conversation.</p>
+              </div>
+            )}
+
+            {groups.map((g) => (
+              <MessageGroup
+                key={g.id}
+                group={g}
+                otherName={other?.displayName}
+                otherPhoto={other?.profilePhoto}
+                otherHref={profileHref}
+                onRetry={retry}
+              />
+            ))}
+
+            {theyType && (
+              <div className="typing-line">{other?.displayName ?? 'They'} is typing…</div>
+            )}
           </div>
-        )}
-
-        {messages.map((m, i) => {
-          const mine = m.senderId === me?.id;
-          // A timestamp divider whenever more than 20 minutes has passed.
-          const prev = messages[i - 1];
-          const gap =
-            !prev ||
-            new Date(m.createdAt).getTime() - new Date(prev.createdAt).getTime() > 20 * 60 * 1000;
-
-          return (
-            <div key={m.id} style={{ display: 'contents' }}>
-              {gap && <div className="thread-divider">{messageGroupLabel(m.createdAt)}</div>}
-              <div className={`bubble ${mine ? 'mine' : 'theirs'}`}>{m.text}</div>
-            </div>
-          );
-        })}
-
-        {theyType && (
-          <div className="typing-line">{other?.displayName ?? 'They'} is typing…</div>
         )}
       </div>
 
       {!canMessage ? (
         /* History above stays readable — only the ability to add to it stops. */
-        <div className="composer">
-          <p className="composer-locked">
-            You and {other?.displayName ?? 'this person'} need to follow each other before you
-            can message.
-          </p>
+        <div className="chat-composer">
+          <div className="chat-composer-inner">
+            <p className="chat-locked">
+              You and {other?.displayName ?? 'this person'} need to follow each other before you
+              can message.
+            </p>
+          </div>
         </div>
       ) : (
-      <div className="composer">
-        <div className="composer-row" style={{ position: 'relative' }}>
-          <div style={{ position: 'relative' }}>
-            <button
-              type="button"
-              className="icon-action"
-              aria-label="Insert emoji"
-              aria-expanded={showEmoji}
-              onClick={() => setShowEmoji((v) => !v)}
-            >
-              <Smile />
-            </button>
-
-            {showEmoji && (
-              <div className="emoji-pop" role="menu">
-                {EMOJI.map((e) => (
-                  <button
-                    key={e}
-                    type="button"
-                    onClick={() => {
-                      setDraft((d) => d + e);
-                      setShowEmoji(false);
-                      inputRef.current?.focus();
-                    }}
-                  >
-                    {e}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <textarea
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => onType(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-            placeholder="Message…"
-            rows={1}
-            aria-label="Write a message"
-          />
-
-          <button
-            type="button"
-            className="send-btn"
-            disabled={!draft.trim() || sending}
-            onClick={() => void send()}
-            aria-label="Send message"
-          >
-            <Send />
-          </button>
-        </div>
-      </div>
+        <Composer
+          draft={draft}
+          onDraft={onType}
+          onSend={() => void send()}
+          onPickPhoto={(f) => void onPickPhoto(f)}
+          onVoiceNote={() => void onVoiceNote()}
+          recorder={recorder}
+          sending={sending}
+          attaching={attaching}
+        />
       )}
     </div>
   );

@@ -32,7 +32,7 @@ export type Mood = (typeof MOODS)[number];
 export type AuthProvider = 'local' | 'google';
 export const AUTH_PROVIDERS: AuthProvider[] = ['local', 'google'];
 
-/** Whether a follow needs approval. Drives the whole request flow. */
+/** Visibility of profile content. All new follows require approval. */
 export const PROFILE_VISIBILITIES = ['public', 'private'] as const;
 export type ProfileVisibility = (typeof PROFILE_VISIBILITIES)[number];
 
@@ -66,20 +66,12 @@ export interface IUser {
   favouriteGenres: string[];
   favouriteMood?: Mood;
   pinnedFilms: PinnedFilm[];
-  /**
-   * @deprecated Superseded by the `follows` collection, which can carry a
-   * `pending` state these arrays cannot express. Kept only so
-   * `scripts/migrateFollows.ts` can read the old graph; nothing else may.
-   */
+  /** Confirmed relationships only; mirrored from the Follow collection. */
   following: Types.ObjectId[];
-  /** @deprecated See `following`. */
   followers: Types.ObjectId[];
-  /**
-   * Who may follow without approval. `public` creates an accepted edge on the
-   * spot; `private` creates a pending request the target must accept.
-   * New accounts are public — the default has to match what someone signing up
-   * for a social film app expects.
-   */
+  /** Incoming requests awaiting a decision. */
+  followRequests: { from: Types.ObjectId; createdAt: Date }[];
+  /** Controls content visibility, independently of follow approval. */
   profileVisibility: ProfileVisibility;
   /**
    * Denormalized counts, maintained by `$inc` alongside every edge write.
@@ -191,6 +183,13 @@ const userSchema = new Schema<IUser>(
     // Deprecated — see the interface. Retained purely for the migration script.
     following: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
     followers: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    followRequests: {
+      type: [new Schema({
+        from: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+        createdAt: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: [],
+    },
     profileVisibility: { type: String, enum: PROFILE_VISIBILITIES, default: 'public' },
     followerCount: { type: Number, default: 0, min: 0 },
     followingCount: { type: Number, default: 0, min: 0 },

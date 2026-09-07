@@ -17,11 +17,13 @@ export function notificationLine(n: Notification): {
   /** True when Velvet itself sent it, so the UI shows the AI mark. */
   system: boolean;
 } {
-  const who = n.from?.displayName ?? n.from?.username ?? 'Someone';
+  const actor = n.actor ?? n.from;
+  const who = actor?.displayName ?? actor?.username ?? 'Someone';
+  const username = actor?.username ?? who;
   const title = n.contentTitle ?? 'a title';
   const contentHref =
     n.contentId && n.contentType ? hrefFor(n.contentType, n.contentId) : '/notifications';
-  const profileHref = n.from ? `/profile/${n.from.username}` : '/notifications';
+  const profileHref = actor ? `/profile/${encodeURIComponent(actor.username)}` : '/notifications';
 
   switch (n.type) {
     // Pre-split rows still in the database; reads the same as new_follower.
@@ -29,9 +31,9 @@ export function notificationLine(n: Notification): {
     case 'new_follower':
       return { text: `${who} started following you`, href: profileHref, system: false };
     case 'follow_request':
-      return { text: `${who} wants to follow you`, href: profileHref, system: false };
+      return { text: `${username} wants to follow you`, href: profileHref, system: false };
     case 'follow_accepted':
-      return { text: `${who} accepted your follow request`, href: profileHref, system: false };
+      return { text: `${username} accepted your follow request`, href: profileHref, system: false };
     case 'review_like':
       return { text: `${who} liked your review of ${title}`, href: contentHref, system: false };
     case 'review_reply':

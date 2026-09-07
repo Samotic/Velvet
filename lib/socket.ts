@@ -26,6 +26,8 @@ export interface ServerEvents {
   'typing:start': (payload: { userId: string }) => void;
   'typing:stop': (payload: { userId: string }) => void;
   'notification:new': (notification: unknown) => void;
+  'notification:changed': (payload: { unread?: number }) => void;
+  'follow:changed': (payload: { userId?: string }) => void;
 }
 
 /**

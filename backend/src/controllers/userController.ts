@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
 
-import { Notification } from '../models/Notification';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
 import { viewerId } from '../middleware/auth';
@@ -13,17 +12,19 @@ import {
 import {
   blockUser,
   createFollow,
+  FollowForbiddenError,
   isBlockedBetween,
   NotFoundError,
   relationBetween,
   relationMap,
   removeFollow,
+  RequestGoneError,
+  resolveFollow,
   unblockUser,
 } from '../services/social';
 import { consume } from '../services/rateLimit';
-import { Follow } from '../models/Follow';
+import { Follow, type FollowStatus } from '../models/Follow';
 import { fail, ok } from '../utils/http';
-import { notify } from '../utils/notify';
 import { publicProfile } from '../utils/serialize';
 import {
   cleanGenres,
@@ -167,14 +168,19 @@ export async function uploadPhoto(req: Request, res: Response): Promise<Response
 /* -------------------------------- follows -------------------------------- */
 
 /**
- * POST /api/users/:id/follow
+ * Every follow begins as a request, whoever the target is.
  *
- * Returns `{ status: 'accepted' | 'pending' }` — accepted for a public target,
- * pending for a private one. **Idempotent**: calling it again reports the
- * current state as a success rather than erroring, because pressing Follow
- * twice and ending up following once is what the user meant.
+ * The two entry points differ only in the words they answer with: the current
+ * client reads `requested` / `following`, while `POST /:id/follow` predates the
+ * approval flow and still reads the raw edge status. Sharing the body keeps the
+ * validation, the block check and the rate limit in one place — three copies of
+ * a permission check is how one of them ends up missing.
  */
-export async function follow(req: Request, res: Response): Promise<Response> {
+async function sendFollowRequest(
+  req: Request,
+  res: Response,
+  label: (status: FollowStatus) => string,
+): Promise<Response> {
   try {
     const targetId = req.params.id;
     const me = req.user!.userId;
@@ -195,33 +201,100 @@ export async function follow(req: Request, res: Response): Promise<Response> {
       return fail(res, `RATE_LIMITED: Slow down for a minute.|${limit.retryAfter}`, 429);
     }
 
+    /**
+     * The notification, its socket push and the counters all happen inside
+     * `createFollow`, on the transaction that creates the edge. Sending one
+     * from here as well is what put the unread badge permanently one ahead of
+     * the list — the row was upserted once but counted twice.
+     */
     const outcome = await createFollow(me, targetId);
-
-    // Only on the call that actually created the edge — otherwise a double-tap
-    // sends two notifications for one follow.
-    if (outcome.created) {
-      await notify({
-        userId: targetId,
-        type: outcome.status === 'pending' ? 'follow_request' : 'new_follower',
-        fromUserId: me,
-        followId: String(outcome.followId),
-      });
-    }
-
-    return ok(res, { status: outcome.status });
+    return ok(res, { status: label(outcome.status) });
   } catch (err) {
     if (err instanceof NotFoundError) return fail(res, 'User not found', 404);
-    console.error('follow error:', err);
-    return fail(res, 'Could not follow that user', 500);
+    if (err instanceof FollowForbiddenError) return fail(res, "Can't follow this account", 403);
+    console.error('follow request error:', err);
+    return fail(res, 'Could not send that follow request', 500);
   }
 }
 
 /**
- * DELETE /api/users/:id/follow — unfollow, or cancel one's own pending request.
+ * POST /api/users/:id/follow-request
  *
- * Also clears the target's `follow_request` notification: cancelling a request
- * should leave nothing behind for them to accept, or they'd act on a request
- * that no longer exists and get a 410.
+ * Returns `{ status: 'requested' }` for a new or still-pending ask, and
+ * `{ status: 'following' }` when the edge is already accepted. **Idempotent**:
+ * pressing Follow twice reports the current state as a success rather than
+ * erroring, because ending up following once is what the user meant.
+ */
+export const followRequest = (req: Request, res: Response): Promise<Response> =>
+  sendFollowRequest(req, res, (status) => (status === 'accepted' ? 'following' : 'requested'));
+
+/**
+ * POST /api/users/:id/follow — the pre-approval route, kept working.
+ *
+ * Answers with the raw edge status (`pending` / `accepted`) so clients written
+ * against it keep parsing the same values.
+ */
+export const follow = (req: Request, res: Response): Promise<Response> =>
+  sendFollowRequest(req, res, (status) => status);
+
+/**
+ * Accept or decline the request `:id` sent to the caller.
+ *
+ * **Authorization comes from the session, never the URL.** `:id` names the
+ * requester; the recipient is always `req.user`, so there is no id a caller can
+ * supply that makes them the target of someone else's request.
+ */
+async function respondToRequest(
+  req: Request,
+  res: Response,
+  decision: 'accepted' | 'declined',
+): Promise<Response> {
+  const verb = decision === 'accepted' ? 'accept' : 'decline';
+  try {
+    const requesterId = req.params.id;
+    const me = req.user!.userId;
+
+    if (!isObjectId(requesterId)) return fail(res, 'Request not found', 404);
+    if (requesterId === me) return fail(res, 'You cannot act on your own request', 400);
+
+    await resolveFollow(requesterId, me, decision);
+    return ok(res, { status: decision === 'accepted' ? 'following' : 'declined' });
+  } catch (err) {
+    // Routine, and specifically not a 500: the requester cancelled while this
+    // user was reading the notification.
+    if (err instanceof RequestGoneError) {
+      return fail(res, 'GONE: That request is no longer available', 410);
+    }
+    if (err instanceof FollowForbiddenError) return fail(res, "Can't act on that request", 403);
+    console.error(`${verb} follow error:`, err);
+    return fail(res, `Could not ${verb} that request`, 500);
+  }
+}
+
+/** POST /api/users/:id/accept-follow — `:id` asked to follow the caller. */
+export const acceptFollow = (req: Request, res: Response): Promise<Response> =>
+  respondToRequest(req, res, 'accepted');
+
+/**
+ * POST /api/users/:id/decline-follow
+ *
+ * The requester is **not** notified: telling someone they were rejected is
+ * hostile and creates pressure to ask again. Nothing stops them re-requesting
+ * later — stopping that permanently is what blocking is for.
+ */
+export const declineFollow = (req: Request, res: Response): Promise<Response> =>
+  respondToRequest(req, res, 'declined');
+
+/**
+ * DELETE /api/users/:id/follow — unfollow, or withdraw one's own request.
+ *
+ * One route for both because from the presser's side it is one gesture: undo.
+ * Reports `not_following` even when there was nothing to undo, so a double-tap
+ * settles on the state the user asked for instead of erroring.
+ *
+ * Cancelling also clears the target's request notification, which
+ * `removeFollow` does on the same transaction as the edge deletion — doing it
+ * here instead would leave a card that accepts into a 410.
  */
 export async function unfollow(req: Request, res: Response): Promise<Response> {
   try {
@@ -229,21 +302,96 @@ export async function unfollow(req: Request, res: Response): Promise<Response> {
     const me = req.user!.userId;
     if (!isObjectId(targetId)) return fail(res, 'User not found', 404);
 
-    const removed = await removeFollow(me, targetId);
+    await removeFollow(me, targetId);
 
-    if (removed === 'pending') {
-      await Notification.deleteMany({
-        userId: new Types.ObjectId(targetId),
-        fromUserId: new Types.ObjectId(me),
-        type: 'follow_request',
-        actionState: 'pending',
-      });
-    }
-
-    return ok(res, { status: null });
+    return ok(res, { status: 'not_following' });
   } catch (err) {
     console.error('unfollow error:', err);
     return fail(res, 'Could not unfollow that user', 500);
+  }
+}
+
+/**
+ * GET /api/users/me/follow-requests?limit=&cursor= — the pending queue.
+ *
+ * Newest first, and **cursor-paginated on `(createdAt, _id)` rather than an
+ * offset**: requests arrive and are answered while the list is on screen, and
+ * an offset silently skips or repeats a row every time the set shifts under it.
+ * The id is the tie-break, because two requests can share a millisecond and a
+ * date-only cursor would drop whichever of them sorted second.
+ *
+ * `total` is the whole queue, not this page — it is what the "Follow Requests
+ * (N)" heading and the profile link count.
+ */
+export async function followRequests(req: Request, res: Response): Promise<Response> {
+  try {
+    const me = new Types.ObjectId(req.user!.userId);
+
+    const raw = Number(req.query.limit);
+    const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 50) : 20;
+
+    const pending = { followingId: me, status: 'pending' as const };
+    const filter: Record<string, unknown> = { ...pending };
+
+    const cursor = str(req.query.cursor);
+    if (cursor) {
+      const [at, id] = cursor.split('|');
+      const when = new Date(at);
+      if (!Number.isNaN(when.getTime())) {
+        filter.$or = isObjectId(id)
+          ? [{ createdAt: { $lt: when } }, { createdAt: when, _id: { $lt: new Types.ObjectId(id) } }]
+          : [{ createdAt: { $lt: when } }];
+      }
+    }
+
+    // One extra row tells us whether another page exists without a second count.
+    const [edges, total] = await Promise.all([
+      Follow.find(filter).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean(),
+      Follow.countDocuments(pending),
+    ]);
+
+    const hasMore = edges.length > limit;
+    const page = hasMore ? edges.slice(0, limit) : edges;
+
+    /**
+     * The senders in one query, and **explicitly projected**. A card shows an
+     * avatar, a name and a follower count; selecting the whole document would
+     * put the requester's email address in a response the recipient has no
+     * business reading.
+     */
+    const senders = await User.find({ _id: { $in: page.map((e) => e.followerId) } })
+      .select('username displayName profilePhoto followerCount')
+      .lean();
+    const byId = new Map(senders.map((u) => [String(u._id), u]));
+
+    // flatMap drops any edge whose sender was deleted mid-page rather than
+    // rendering a card with nobody on it.
+    const requests = page.flatMap((edge) => {
+      const sender = byId.get(String(edge.followerId));
+      if (!sender) return [];
+      return [{
+        id: String(edge._id),
+        createdAt: edge.createdAt,
+        from: {
+          id: String(sender._id),
+          username: sender.username,
+          displayName: sender.displayName,
+          profilePhoto: sender.profilePhoto ?? null,
+          followerCount: sender.followerCount ?? 0,
+        },
+      }];
+    });
+
+    const last = page[page.length - 1];
+    return ok(res, {
+      requests,
+      total,
+      nextCursor:
+        hasMore && last ? `${new Date(last.createdAt).toISOString()}|${String(last._id)}` : null,
+    });
+  } catch (err) {
+    console.error('followRequests error:', err);
+    return fail(res, 'Could not load your follow requests', 500);
   }
 }
 
