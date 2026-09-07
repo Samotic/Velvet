@@ -35,8 +35,18 @@ async function main() {
   const server = createServer(app);
   initSocket(server);
 
-  server.listen(env.port, () => {
-    console.log(`✓ Velvet API listening on http://localhost:${env.port}`);
+  /**
+   * `0.0.0.0`, stated rather than left to Node's default.
+   *
+   * Node already binds every interface when the host is omitted, so this
+   * changes no behaviour — but inside a container "which interface" is the
+   * difference between a reachable service and one the platform's healthcheck
+   * times out on, and a default that happens to be right is a poor thing to
+   * rest a deploy on. `env.port` is `process.env.PORT` with a local fallback;
+   * Railway injects that variable, so nothing here may hardcode 4000.
+   */
+  server.listen(env.port, '0.0.0.0', () => {
+    console.log(`✓ Velvet API listening on 0.0.0.0:${env.port}`);
     console.log(`  CORS allow-origin: ${env.frontendUrl}`);
 
     // Every third-party integration is optional; say plainly which are live so

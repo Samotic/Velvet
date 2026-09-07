@@ -83,9 +83,25 @@ export function createApp(): Application {
   // key in body, query or params can be a Mongo operator.
   app.use(sanitizeRequest);
 
-  app.get('/api/health', (_req, res) => {
+  /**
+   * Liveness, on both paths.
+   *
+   * `/health` is unprefixed because a platform healthcheck is not an API call
+   * and should not have to know the API's mount point; `/api/health` predates
+   * it and stays so nothing that already polls it breaks.
+   *
+   * Neither touches Mongo, deliberately. A healthcheck that queries the
+   * database conflates "this process is alive" with "its dependencies are
+   * reachable" — and the platform's response to a failed check is to kill and
+   * restart the container, which is precisely the wrong move during a database
+   * blip. The process is up; that is what this reports.
+   */
+  const health = (_req: Request, res: Response) => {
     res.json({ data: { status: 'ok', service: 'velvet-api' } });
-  });
+  };
+
+  app.get('/health', health);
+  app.get('/api/health', health);
 
   app.use('/api', apiRoutes);
 

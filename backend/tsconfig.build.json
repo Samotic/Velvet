@@ -5,5 +5,10 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  /* Tests are source, but they are not the product. Without this they compile
+     into `dist` and ship inside the image, dragging `node:test` imports and
+     fixture data into a production bundle for no reason. `npm test` runs the
+     .ts files directly through tsx and never looks at `dist`. */
+  "exclude": ["src/**/*.test.ts"]
 }

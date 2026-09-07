@@ -1,0 +1,42 @@
+# Everything the image does not need, kept out of the build context.
+#
+# This is not only about image size: the context is uploaded to the builder
+# before anything runs, so a stray `.env` here would be sent to the build host
+# even though no COPY ever references it. Secrets come from the Railway
+# dashboard and must never enter a layer.
+
+# Secrets. .env.example is intentionally not excluded — it is a checklist, not
+# a credential, and it is useful to have alongside the code.
+.env
+.env.*
+!.env.example
+
+# Installed and built output — both are produced inside the image.
+node_modules
+dist
+
+# Local Mongo binaries downloaded by mongodb-memory-server. Hundreds of MB of
+# build context that the runtime never touches.
+.cache
+
+# Verification and maintenance scripts. They are devDependencies-only (tsx,
+# supertest, mongodb-memory-server) and none of them run in production.
+#
+# Note: this also keeps scripts/migrate-message-soft-delete.ts out of the
+# image, so the migration is run from a machine with the production
+# MONGODB_URI rather than from inside the container.
+scripts
+
+# Tests. Excluded from the build by tsconfig.build.json too; this keeps them
+# out of the context as well.
+src/**/*.test.ts
+
+# Tooling and editor noise.
+.git
+.gitignore
+.DS_Store
+*.log
+npm-debug.log*
+Dockerfile
+.dockerignore
+README.md
