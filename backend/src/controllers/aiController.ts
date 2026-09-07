@@ -16,7 +16,14 @@ import {
 } from '../lib/ai';
 import { isValidAudioDataUrl, stripMimeParams } from '../services/cloudinary';
 import * as tmdb from '../services/tmdb';
-import { recentTitles, topRatedTitles, userStats } from '../services/stats';
+import {
+  dislikedTitles,
+  lovedTitles,
+  recentTitles,
+  typeMix,
+  userStats,
+} from '../services/stats';
+import { watchlistSignal } from '../services/watchlistSignals';
 import { fail, ok } from '../utils/http';
 import { clean, str } from '../utils/validation';
 
@@ -77,10 +84,18 @@ async function tasteProfile(userId: string): Promise<TasteProfile | null> {
   const user = await User.findById(userId).lean();
   if (!user) return null;
 
-  const [stats, top, recent] = await Promise.all([
+  /**
+   * All six in parallel. They are independent reads against indexed
+   * collections, and running them in series would put six round trips on the
+   * front of every advisor turn for no benefit.
+   */
+  const [stats, recent, loved, disliked, mix, watchlist] = await Promise.all([
     userStats(userId),
-    topRatedTitles(userId, 5),
     recentTitles(userId, 10),
+    lovedTitles(userId, 8),
+    dislikedTitles(userId, 6),
+    typeMix(userId),
+    watchlistSignal(userId, 10),
   ]);
 
   return {
@@ -90,9 +105,16 @@ async function tasteProfile(userId: string): Promise<TasteProfile | null> {
     favouriteGenres: user.favouriteGenres ?? [],
     favouriteMood: user.favouriteMood,
     watchHistoryCount: stats.films,
-    topRatedFilms: top,
     avgRating: stats.avgRating,
     recentWatches: recent,
+    loved,
+    disliked,
+    // Already computed by `userStats` and previously thrown away — this is
+    // observed behaviour, where `favouriteGenres` is what they said at signup.
+    observedGenres: stats.genreBreakdown.slice(0, 6),
+    typeMix: mix,
+    watchlist: watchlist.saved,
+    inProgress: watchlist.inProgress,
   };
 }
 

@@ -51,9 +51,28 @@ const PROFILE: TasteProfile = {
   favouriteGenres: ['Thriller', 'Horror', 'Science Fiction'],
   favouriteMood: 'tense',
   watchHistoryCount: 142,
-  topRatedFilms: ['Hereditary', 'Blade Runner 2049', 'Sicario'],
   avgRating: 3.8,
   recentWatches: ['The Substance', 'Dune: Part Two'],
+  // The behavioural half. Scores travel with the titles, and the dislikes are
+  // here because a fixture without them would not exercise the steer-away
+  // instructions at all.
+  loved: [
+    { title: 'Hereditary', rating: 5, type: 'movie' },
+    { title: 'Blade Runner 2049', rating: 5, type: 'movie' },
+    { title: 'Sicario', rating: 4, type: 'movie' },
+  ],
+  disliked: [
+    { title: 'Love Actually', rating: 1, type: 'movie' },
+    { title: 'Emily in Paris', rating: 2, type: 'series' },
+  ],
+  observedGenres: [
+    { genre: 'Thriller', count: 41 },
+    { genre: 'Horror', count: 33 },
+    { genre: 'Drama', count: 18 },
+  ],
+  typeMix: { movie: 118, series: 21, game: 3 },
+  watchlist: ['The Zone of Interest', 'Poor Things'],
+  inProgress: [{ title: 'Shogun', percent: 40 }],
 };
 
 async function run() {

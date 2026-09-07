@@ -15,12 +15,24 @@ export interface TasteProfile {
   displayName: string;
   age?: number;
   gender?: string;
+  /** Declared at onboarding — what they *say* they like. */
   favouriteGenres: string[];
   favouriteMood?: string;
   watchHistoryCount: number;
-  topRatedFilms: string[];
   avgRating: number | null;
   recentWatches: string[];
+  /** Their best, with scores. "Top rated" means little without the number. */
+  loved?: { title: string; rating: number; type: string }[];
+  /** What they disliked. The half the advisor never had. */
+  disliked?: { title: string; rating: number; type: string }[];
+  /** Observed genre counts from actual ratings, not the declared list. */
+  observedGenres?: { genre: string; count: number }[];
+  /** How their attention actually splits across the three catalogues. */
+  typeMix?: { movie: number; series: number; game: number };
+  /** Agreed to watch and hasn't. */
+  watchlist?: string[];
+  /** Part-way through right now. */
+  inProgress?: { title: string; percent: number }[];
 }
 
 export interface AdvisorTurn {
@@ -30,6 +42,70 @@ export interface AdvisorTurn {
 
 const none = (v: string) => v || 'not shared';
 const list = (v: string[]) => (v.length ? v.join(', ') : 'none yet');
+
+/** `Parasite (5/5)`, so a title carries the verdict that makes it useful. */
+const withScores = (rows: { title: string; rating: number }[]) =>
+  rows.map((r) => `${r.title} (${r.rating}/5)`).join(', ');
+
+/**
+ * The behavioural half of the profile, and the instructions for using it.
+ *
+ * Every line is omitted when empty rather than printed as "none yet". A new
+ * account has no dislikes and no watchlist, and an absent line reads as "no
+ * data"; a present-but-empty one invites the model to remark on the absence,
+ * which is not a conversation anybody wants to have with a recommender.
+ *
+ * The instructions matter as much as the data. A model handed a list of
+ * dislikes will happily recommend something adjacent to it unless told plainly
+ * what the list is for, and one handed a watchlist will present items on it as
+ * fresh discoveries — which is how an advisor loses the user's trust fastest,
+ * because they know perfectly well they already saved it.
+ */
+function signals(p: TasteProfile): string {
+  const lines: string[] = [];
+
+  if (p.loved?.length) lines.push(`- Loved: ${withScores(p.loved)}`);
+  if (p.disliked?.length) lines.push(`- Disliked: ${withScores(p.disliked)}`);
+
+  if (p.observedGenres?.length) {
+    const observed = p.observedGenres.map((g) => `${g.genre} (${g.count})`).join(', ');
+    lines.push(`- Genres they actually rate: ${observed}`);
+  }
+
+  if (p.typeMix) {
+    const { movie, series, game } = p.typeMix;
+    if (movie + series + game > 0) {
+      lines.push(`- Split by kind: ${movie} films, ${series} series, ${game} games`);
+    }
+  }
+
+  if (p.watchlist?.length) lines.push(`- Already on their watchlist: ${list(p.watchlist)}`);
+
+  if (p.inProgress?.length) {
+    const mid = p.inProgress.map((i) => `${i.title} (${i.percent}% in)`).join(', ');
+    lines.push(`- Part-way through right now: ${mid}`);
+  }
+
+  if (!lines.length) return '';
+
+  return `${lines.join('\n')}
+
+How to use the behavioural data above:
+- The "Disliked" list is what to steer AWAY from. Do not recommend those
+  titles, and be careful with close neighbours of them. If you do suggest
+  something adjacent, say why this one is different.
+- Where the declared favourite genres and the genres they actually rate
+  disagree, trust what they rate. People describe their taste aspirationally.
+- Do not present something already on their watchlist as a discovery. You may
+  absolutely point at it — "you already saved this, tonight is the night" is
+  useful — but never as though it were new to them.
+- If they are part-way through something, that comes first. Someone 40% into a
+  series does not want a new series; ask whether they are enjoying it or help
+  them finish before suggesting anything else.
+- If one kind dominates the split, recommend mostly that kind unless they ask
+  otherwise. Do not push films at someone who only rates games.
+`;
+}
 
 /**
  * Builds the system prompt from the spec, with the user's profile interpolated.
@@ -59,11 +135,10 @@ This user's profile:
 - Gender: ${none(p.gender ?? '')}
 - Favourite genres: ${list(p.favouriteGenres)}
 - Favourite mood: ${none(p.favouriteMood ?? '')}
-- Films watched: ${p.watchHistoryCount}
-- Top rated films: ${list(p.topRatedFilms)}
-- Average rating they give: ${p.avgRating ?? 'no ratings yet'} out of 5
+- Titles rated: ${p.watchHistoryCount}
+- Average rating they give: ${p.avgRating === null || p.avgRating === undefined ? 'no ratings yet' : `${p.avgRating} out of 5`}
 - Recent watches: ${list(p.recentWatches)}
-
+${signals(p)}
 Use this profile to give hyper-personalised recommendations.
 Be specific — name actual films, directors, explain WHY this
 person specifically would love it based on their taste.

@@ -557,6 +557,17 @@ resolves to Gemini rather than silently falling back to the retired provider.
   not be "upgraded" to `responseSchema`, which would change the reply into a
   shape the UI cannot render and `linkTitles` cannot rewrite. `ChatOptions.json`
   + `schema` exist for any future caller that genuinely wants structured output.
+- **The taste profile carries behaviour, not just declarations.** Alongside the
+  onboarding answers the prompt gets what the user actually rated: loved and
+  **disliked** titles with their scores, observed genre counts, the split across
+  films/series/games, the watchlist, and anything part-way through. The dislikes
+  are the half that was missing — without them the model can only argue from
+  enthusiasm and will recommend the thing the user already told us they hated.
+  Each line is **omitted when empty** rather than printed as "none yet": an
+  absent line reads as no data, a present-but-empty one invites the model to
+  remark on the absence. `signals()` in `advisor.ts` owns both the data and the
+  instructions for using it, because a list of dislikes with no instruction is
+  just more titles to recommend.
 - **The advisor is told the date, and told to trust it.** `lib/ai/clock.ts`
   writes the weekday, full date and time into the system prompt, resolved in
   the **browser's** IANA zone (sent as `timeZone` on every turn), because the

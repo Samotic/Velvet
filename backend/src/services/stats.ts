@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 
 import { Rating } from '../models/Rating';
+import type { ContentType } from '../models/User';
 
 /**
  * Watch statistics derived from a user's ratings. There is no separate "watched"
@@ -132,4 +133,75 @@ export async function recentTitles(
     .select('contentTitle')
     .lean();
   return rows.map((r) => r.contentTitle).filter(Boolean);
+}
+
+/* ------------------------- signals for the advisor ------------------------ */
+
+/**
+ * A rated title with its score attached.
+ *
+ * The advisor was being handed bare titles, which loses the thing that makes
+ * them useful: "their top rated" means something very different when the top
+ * score is a 5 than when it is a 3. One line each, cheap to interpolate.
+ */
+export interface ScoredTitle {
+  title: string;
+  rating: number;
+  type: ContentType;
+}
+
+const scored = (rows: { contentTitle: string; rating: number; contentType: ContentType }[]) =>
+  rows
+    .filter((r) => Boolean(r.contentTitle))
+    .map((r) => ({ title: r.contentTitle, rating: r.rating, type: r.contentType }));
+
+/** Their best, with scores — the positive half of the signal. */
+export async function lovedTitles(
+  userId: string | Types.ObjectId,
+  limit = 8,
+): Promise<ScoredTitle[]> {
+  const rows = await Rating.find({ userId, rating: { $gte: 4 } })
+    .sort({ rating: -1, createdAt: -1 })
+    .limit(limit)
+    .select('contentTitle rating contentType')
+    .lean();
+  return scored(rows);
+}
+
+/**
+ * What they disliked — the half the advisor never had.
+ *
+ * Knowing what someone walked away from is at least as informative as knowing
+ * what they loved: it rules out a whole lane rather than nudging toward one.
+ * Without it the model can only ever argue from enthusiasm, and will happily
+ * recommend the exact thing this person already told us they hated.
+ */
+export async function dislikedTitles(
+  userId: string | Types.ObjectId,
+  limit = 6,
+): Promise<ScoredTitle[]> {
+  const rows = await Rating.find({ userId, rating: { $lte: 2 } })
+    .sort({ rating: 1, createdAt: -1 })
+    .limit(limit)
+    .select('contentTitle rating contentType')
+    .lean();
+  return scored(rows);
+}
+
+/**
+ * How their attention is actually split across the three catalogues.
+ *
+ * The advisor covers films, series and games, but the profile only ever said
+ * "films watched" — so someone who rates nothing but games was being given
+ * film recommendations with no signal that they were off target.
+ */
+export async function typeMix(
+  userId: string | Types.ObjectId,
+): Promise<{ movie: number; series: number; game: number }> {
+  const rows = await Rating.find({ userId }).select('contentType').lean();
+  const mix = { movie: 0, series: 0, game: 0 };
+  for (const r of rows) {
+    if (r.contentType in mix) mix[r.contentType as keyof typeof mix] += 1;
+  }
+  return mix;
 }
