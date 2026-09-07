@@ -19,28 +19,54 @@ readable message, and the boot log prints which are live.
 
 ### Railway — the API
 
-| Variable | Required | Where the value comes from |
-| --- | --- | --- |
-| `MONGODB_URI` | **Boot fails without it** | Atlas → Database → Connect → Drivers. Include the database name. |
-| `JWT_SECRET` | **Boot fails on the dev default** | Generate: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`. Changing it later signs every existing session out. |
-| `FRONTEND_URL` | **Boot fails in production** | The Vercel URL, no trailing slash. It is the CORS allow-list *and* the Socket.io origin. |
-| `API_URL` | **Boot fails if Google is configured and `GOOGLE_CALLBACK_URL` is not** | This service's own Railway URL. Only ever read to build the Google callback. |
-| `PORT` | **Do not set** | Railway injects it. Setting it pins the server to a port the platform is not routing to, and the healthcheck fails on a process that is running fine. |
-| `NODE_ENV` | Set for you | The Dockerfile sets `production`. |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | Google Cloud console → APIs & Services → Credentials → OAuth client ID (Web application). Without them the button hides and the routes 503. |
-| `GOOGLE_CALLBACK_URL` | Optional | The **exact** Authorised redirect URI registered with Google. Compared byte for byte — a trailing slash or `http` vs `https` is a failed sign-in, not a warning. Set this *or* `API_URL`. |
-| `GEMINI_API_KEY` | Optional | aistudio.google.com/apikey. Without it the advisor answers 503. |
-| `CLOUDINARY_CLOUD_NAME` / `_API_KEY` / `_API_SECRET` | Optional | cloudinary.com/console → Dashboard. Without them photos and voice notes are refused politely; text messaging still works. |
-| `TMDB_READ_TOKEN` *or* `TMDB_API_KEY` | Optional | themoviedb.org/settings/api. Without one, films and series are empty. |
-| `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` | Optional | dev.twitch.tv/console/apps. Without them, Games is empty. |
-| `RESEND_API_KEY` | Optional | resend.com → API Keys. Without it every send is a logged no-op — registration works, verification cannot. |
-| `EMAIL_FROM` | Optional | A domain verified in Resend. |
-| `AI_FREE_DAILY_MESSAGES` | Optional, default 25 | The only bound on your model bill. A voice question costs two calls against one message. |
-| `MEDIA_DESTROY_DRYRUN` | **Do not set** | Debug only. Left on, retracted photos and voice notes are never deleted from Cloudinary. |
-| `SUPPORTS_TRANSACTIONS` | Leave unset | Defaults true, correct for Atlas. Only `false` against a standalone `mongod`. |
-
 Healthcheck path: **`/health`** — returns 200 and deliberately does not touch
 Mongo, so a database blip does not get the container restarted.
+
+#### Must be set — the server exits without them
+
+| Variable | Where the value comes from | If missing |
+| --- | --- | --- |
+| `MONGODB_URI` | Atlas → Database → Connect → Drivers. Include the database name in the path. | `FATAL` at boot. |
+| `JWT_SECRET` | `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` | `FATAL` at boot if left on the dev default. Changing it later signs every existing session out. |
+| `FRONTEND_URL` | The Vercel URL, no trailing slash. | `FATAL` at boot. It is the CORS allow-list *and* the Socket.io origin — wrong, and every browser request is blocked while the API looks healthy. |
+| `API_URL` | This service's own Railway URL. | `FATAL` at boot **only if** Google credentials are set and `GOOGLE_CALLBACK_URL` is not. Its sole use is building the Google callback. |
+
+#### Must NOT be set
+
+| Variable | Why |
+| --- | --- |
+| `PORT` | Railway injects it. Setting it pins the server to a port the platform is not routing to, so the healthcheck fails on a process that is running fine. |
+| `MEDIA_DESTROY_DRYRUN` | Debug only. Left on, retracted photos and voice notes are never actually deleted from Cloudinary. |
+| `NODE_ENV` | The Dockerfile already sets `production`. |
+
+#### Optional — each one degrades a single feature
+
+Nothing here stops the app booting. A missing key means the routes that need it
+answer **503 with a readable message**, and the boot log prints which
+integrations are live.
+
+| Variable | Where the value comes from | If missing |
+| --- | --- | --- |
+| `TMDB_READ_TOKEN` | themoviedb.org/settings/api → "API Read Access Token" (long `eyJ…`). Preferred over the v3 key; if both are set this one wins. | Films and series are empty everywhere — home, search, detail pages. The advisor also cannot resolve `[[Title]]` links. |
+| `TMDB_API_KEY` | Same page, "API Key" (32-char hex). Only needed if you are not using the token above. | As above, if the token is also absent. |
+| `IGDB_CLIENT_ID` | dev.twitch.tv/console/apps → your app's Client ID. | The Games tab is empty. Films and series are unaffected. |
+| `IGDB_CLIENT_SECRET` | Same app → Client Secret. | As above — both are needed together. |
+| `GEMINI_API_KEY` | aistudio.google.com/apikey | The advisor answers 503 with a "not configured" state. Voice questions fail too, since transcription runs through the same provider. |
+| `GEMINI_MODEL` | Defaults to `gemini-3.6-flash`. Pin an exact model, never a `-latest` alias. | Falls back to the default. Note this repo currently runs `gemini-3.7-flash` — set it explicitly to match. |
+| `AI_PROVIDER` | `gemini` (default) or `anthropic`. Anything unrecognised resolves to Gemini. | Defaults to Gemini. |
+| `ANTHROPIC_API_KEY` | console.anthropic.com. Only read when `AI_PROVIDER=anthropic`. | Nothing, unless you switched the provider — then the advisor is 503. |
+| `ANTHROPIC_MODEL` | Defaults to `claude-sonnet-4-6`. Only read when `AI_PROVIDER=anthropic`. | Falls back to the default. |
+| `AI_FREE_DAILY_MESSAGES` | A number. Defaults to **25**. | Defaults to 25. This is the only bound on your model bill — Velvet has no paid tier. A voice question costs two calls against one message. |
+| `CLOUDINARY_CLOUD_NAME` | cloudinary.com/console → Dashboard. | Profile photos, message photos and voice notes are all refused politely (503). Text messaging still works. All three Cloudinary values are needed together. |
+| `CLOUDINARY_API_KEY` | Same dashboard. | As above. |
+| `CLOUDINARY_API_SECRET` | Same dashboard — reveal it, it is hidden by default. | As above. |
+| `GOOGLE_CLIENT_ID` | Google Cloud console → APIs & Services → Credentials → OAuth client ID (Web application). | The "Continue with Google" button hides itself and the OAuth routes 503. Email/password sign-in is unaffected. |
+| `GOOGLE_CLIENT_SECRET` | Same credential. | As above — both are needed together. |
+| `GOOGLE_CALLBACK_URL` | The **exact** Authorised redirect URI you registered with Google, e.g. `https://your-api.up.railway.app/api/auth/google/callback`. | Derived from `API_URL` instead. Google compares byte for byte, so a trailing slash or `http` vs `https` is a failed sign-in, not a warning. |
+| `GOOGLE_REDIRECT_URI` | An alias for the row above, for consoles set up under that name. `GOOGLE_CALLBACK_URL` wins when both are present. | Nothing, if `GOOGLE_CALLBACK_URL` or `API_URL` is set. |
+| `RESEND_API_KEY` | resend.com → API Keys. | Every email becomes a logged no-op. Registration still works, but nobody can verify an address — which gates the advisor and messaging. |
+| `EMAIL_FROM` | A domain verified in Resend, e.g. `Velvet <noreply@yourdomain.com>`. | Falls back to Resend's shared sender, which only delivers to the address owning the Resend account. Fine for testing, useless for real users. |
+| `SUPPORTS_TRANSACTIONS` | Leave unset. | Defaults to `true`, which is correct for Atlas — it is a replica set. Set `false` only against a standalone `mongod`, where every transaction throws. |
 
 ### Vercel — the frontend
 
