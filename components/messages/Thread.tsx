@@ -9,13 +9,27 @@ import { ArrowLeft } from '@/components/icons';
 import { Avatar } from '@/components/ui/Avatar';
 import { ApiError, api } from '@/lib/api';
 import type { PublicProfile } from '@/lib/authTypes';
+import { applyDeleted, applyDeletedForMe, applyEdited } from '@/lib/messageEvents';
 import { type ThreadMessage, groupMessages } from '@/lib/messageGroups';
-import { getThread, markThreadRead, sendMessage, sendPhoto, sendVoiceNote } from '@/lib/messages';
+import {
+  type DeleteScope,
+  deleteMessage,
+  editMessage,
+  getThread,
+  markThreadRead,
+  sendMessage,
+  sendPhoto,
+  sendVoiceNote,
+} from '@/lib/messages';
 import { emitSocket, onSocket } from '@/lib/socket';
 
 import { Composer } from './Composer';
 import { MessageGroup } from './MessageGroup';
+import { MessageMenu } from './MessageMenu';
 import { useRecorder } from './useRecorder';
+
+/** Matches the `.msg-row.collapsing` transition in globals.css. */
+const COLLAPSE_MS = 150;
 
 /** How long after the last keystroke we tell the other end typing stopped. */
 const TYPING_IDLE = 1800;
@@ -58,6 +72,17 @@ export function Thread({ userId }: { userId: string }) {
   // server's verdict lands a moment later, and the server is what enforces it.
   const [canMessage, setCanMessage] = useState(true);
 
+  /** The open ⋯ menu, and where it was opened from. */
+  const [menu, setMenu] = useState<{ m: ThreadMessage; at: { x: number; y: number } } | null>(
+    null,
+  );
+  /** The message being reworded, plus the draft that was displaced to do it. */
+  const [editing, setEditing] = useState<{ id: string; before: string } | null>(null);
+  /** Ids still on screen while their removal animates. */
+  const [collapsing, setCollapsing] = useState<ReadonlySet<string>>(new Set());
+  /** Their pending removal timers, so a failed delete can call one off. */
+  const collapseTimers = useRef(new Map<string, number>());
+
   const logRef = useRef<HTMLDivElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingSent = useRef(false);
@@ -96,6 +121,62 @@ export function Thread({ userId }: { userId: string }) {
     return () => controller.abort();
   }, [userId]);
 
+  /**
+   * Marks a row for the collapse transition, then drops it.
+   *
+   * Two steps rather than an immediate filter so the gap closes over 150ms
+   * instead of the thread jumping. Declared before the socket effect that
+   * calls it, and stable, so that effect does not resubscribe on every render.
+   */
+  const collapseThenRemove = useCallback((messageId: string) => {
+    setCollapsing((prev) => new Set(prev).add(messageId));
+    const id = window.setTimeout(() => {
+      collapseTimers.current.delete(messageId);
+      setMessages((prev) => (prev ? applyDeletedForMe(prev, { messageId }) : prev));
+      setCollapsing((prev) => {
+        const next = new Set(prev);
+        next.delete(messageId);
+        return next;
+      });
+    }, COLLAPSE_MS);
+    collapseTimers.current.set(messageId, id);
+  }, []);
+
+  /**
+   * Calls off a collapse that has not finished.
+   *
+   * Needed because the removal is on a timer while the request that justifies
+   * it is on the network. A delete that fails **faster** than the animation —
+   * a 403 from a closed window is immediate — would otherwise be rolled back
+   * into the list and then removed anyway a few milliseconds later by a timer
+   * nobody cancelled, and the message would vanish despite the failure.
+   */
+  const cancelCollapse = useCallback((messageId: string) => {
+    const id = collapseTimers.current.get(messageId);
+    if (id !== undefined) {
+      window.clearTimeout(id);
+      collapseTimers.current.delete(messageId);
+    }
+    setCollapsing((prev) => {
+      if (!prev.has(messageId)) return prev;
+      const next = new Set(prev);
+      next.delete(messageId);
+      return next;
+    });
+  }, []);
+
+  // Timers outlive the component otherwise, and each one holds a setState that
+  // would fire against an unmounted tree when the user navigates mid-animation.
+  useEffect(() => {
+    const timers = collapseTimers.current;
+    return () => {
+      // `forEach`, not `for…of`: this tsconfig targets below ES2015 without
+      // downlevelIteration, so iterating a Map directly does not compile.
+      timers.forEach((id) => window.clearTimeout(id));
+      timers.clear();
+    };
+  }, []);
+
   /* --- realtime --------------------------------------------------------- */
 
   useEffect(() => {
@@ -115,6 +196,31 @@ export function Thread({ userId }: { userId: string }) {
       if (m.senderId === userId) void markThreadRead(userId).catch(() => {});
     });
 
+    /**
+     * Edits and deletes from the other end, and from my own other tabs.
+     *
+     * All three reconcile by `messageId` through the pure helpers in
+     * `lib/messageEvents.ts`, which return the list unchanged when nothing
+     * matched — so an event for a conversation this thread is not showing
+     * costs a comparison and no re-render. That also makes the optimistic
+     * path safe: the echo of my own edit lands on a row that already says the
+     * same thing, and a duplicate is impossible by construction.
+     */
+    const offEdited = onSocket('message:edited', (p) => {
+      setMessages((prev) => (prev ? applyEdited(prev, p) : prev));
+    });
+
+    const offDeleted = onSocket('message:deleted', (p) => {
+      setMessages((prev) => (prev ? applyDeleted(prev, p) : prev));
+    });
+
+    // Mine only — the server never sends this to the other participant. The
+    // row is collapsed first and removed after, so it does not vanish out of
+    // a reader's peripheral vision.
+    const offDeletedForMe = onSocket('message:deletedForMe', (p) => {
+      collapseThenRemove(p.messageId);
+    });
+
     const offStart = onSocket('typing:start', (p) => {
       if ((p as { userId: string }).userId === userId) setTheyType(true);
     });
@@ -124,6 +230,9 @@ export function Thread({ userId }: { userId: string }) {
 
     return () => {
       offNew();
+      offEdited();
+      offDeleted();
+      offDeletedForMe();
       offStart();
       offStop();
     };
@@ -177,6 +286,109 @@ export function Thread({ userId }: { userId: string }) {
     [userId],
   );
 
+  /* --- edit and delete -------------------------------------------------- */
+
+  /** Loads a message into the composer, parking whatever was already typed. */
+  const startEdit = useCallback(
+    (m: ThreadMessage) => {
+      setEditing({ id: m.id, before: draft });
+      setDraft(m.text);
+      setMenu(null);
+    },
+    [draft],
+  );
+
+  /** Leaves edit mode and puts the displaced draft back exactly as it was. */
+  const cancelEdit = useCallback(() => {
+    setEditing((cur) => {
+      if (cur) setDraft(cur.before);
+      return null;
+    });
+  }, []);
+
+  /**
+   * Saves a reword, optimistically.
+   *
+   * On failure the previous body is restored and the composer is *not*
+   * reopened: the user has already seen their text land in the bubble, so
+   * dropping them back into edit mode with the same string would read as the
+   * edit having half-worked. The toast says what happened instead.
+   */
+  const submitEdit = useCallback(
+    async (id: string, text: string) => {
+      const before = messages?.find((m) => m.id === id);
+      if (!before) return;
+
+      const at = new Date().toISOString();
+      setMessages((prev) => (prev ? applyEdited(prev, { messageId: id, text, editedAt: at }) : prev));
+      setEditing(null);
+      setDraft('');
+
+      try {
+        const saved = await editMessage(id, text);
+        // The server's copy wins. An identical edit is answered 200 with
+        // `editedAt` untouched, so this is what removes an "edited" label the
+        // optimistic write had already painted.
+        setMessages((prev) =>
+          prev
+            ? applyEdited(prev, {
+                messageId: id,
+                text: saved.text,
+                editedAt: saved.editedAt ?? '',
+              }).map((m) => (m.id === id ? { ...m, editedAt: saved.editedAt } : m))
+            : prev,
+        );
+      } catch (err) {
+        setMessages((prev) =>
+          prev
+            ? applyEdited(prev, {
+                messageId: id,
+                text: before.text,
+                editedAt: before.editedAt ?? '',
+              }).map((m) => (m.id === id ? { ...m, editedAt: before.editedAt } : m))
+            : prev,
+        );
+        toast.bad(err instanceof ApiError ? err.message : "Couldn't edit message");
+      }
+    },
+    [messages, toast],
+  );
+
+  /**
+   * Deletes, optimistically, and rolls the whole list back on failure.
+   *
+   * The snapshot is the entire array rather than the one message: a retraction
+   * clears several fields at once, and restoring them one by one is a second
+   * description of the tombstone that could disagree with `applyDeleted`.
+   */
+  const removeMessage = useCallback(
+    async (m: ThreadMessage, scope: DeleteScope) => {
+      const snapshot = messages;
+      setMenu(null);
+
+      if (scope === 'me') collapseThenRemove(m.id);
+      else {
+        setMessages((prev) =>
+          prev ? applyDeleted(prev, { messageId: m.id, deletedAt: new Date().toISOString() }) : prev,
+        );
+      }
+
+      // A retracted message cannot still be being edited.
+      setEditing((cur) => (cur?.id === m.id ? null : cur));
+
+      try {
+        await deleteMessage(m.id, scope);
+      } catch (err) {
+        // Call the timer off *before* restoring, or a fast failure gets the
+        // list back and then loses the row again when the timer fires.
+        cancelCollapse(m.id);
+        if (snapshot) setMessages(snapshot);
+        toast.bad(err instanceof ApiError ? err.message : "Couldn't delete message");
+      }
+    },
+    [messages, collapseThenRemove, cancelCollapse, toast],
+  );
+
   /* --- sending ---------------------------------------------------------- */
 
   /** Appends whatever the server saved, unless the socket echo beat us to it. */
@@ -218,6 +430,17 @@ export function Thread({ userId }: { userId: string }) {
     const text = draft.trim();
     if (!text || sending) return;
 
+    /**
+     * In edit mode the same key and the same button save a reword instead of
+     * sending. One entry point rather than two, because the composer has one
+     * primary action at any moment and the mode decides what it is — a second
+     * handler would mean two places that could disagree about which is live.
+     */
+    if (editing) {
+      await submitEdit(editing.id, text);
+      return;
+    }
+
     setDraft('');
     setSending(true);
     stick.current = true;
@@ -242,6 +465,14 @@ export function Thread({ userId }: { userId: string }) {
         mediaWidth: null,
         mediaHeight: null,
         read: false,
+        // An unsent bubble has never been edited or retracted. Spelled out
+        // rather than left off so the optimistic row is the same shape as the
+        // server's copy that replaces it — a partial one would make every
+        // renderer guard against undefined on fields that are never absent.
+        editedAt: null,
+        deletedForEveryone: false,
+        deletedAt: null,
+        deletedBy: null,
         createdAt: new Date().toISOString(),
         sendState: 'sending',
       },
@@ -388,7 +619,9 @@ export function Thread({ userId }: { userId: string }) {
                 otherName={other?.displayName}
                 otherPhoto={other?.profilePhoto}
                 otherHref={profileHref}
+                collapsing={collapsing}
                 onRetry={retry}
+                onOpenMenu={(m, at) => setMenu({ m, at })}
               />
             ))}
 
@@ -419,6 +652,24 @@ export function Thread({ userId }: { userId: string }) {
           recorder={recorder}
           sending={sending}
           attaching={attaching}
+          editing={editing !== null}
+          onCancelEdit={cancelEdit}
+        />
+      )}
+
+      {/*
+        Rendered here rather than inside the row so exactly one can be open at
+        a time — a menu owned by each bubble would let a second open behind the
+        first on a fast right-click.
+      */}
+      {menu && (
+        <MessageMenu
+          message={menu.m}
+          myId={me?.id ?? null}
+          anchor={menu.at}
+          onEdit={() => startEdit(menu.m)}
+          onDelete={(scope) => void removeMessage(menu.m, scope)}
+          onClose={() => setMenu(null)}
         />
       )}
     </div>

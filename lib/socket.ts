@@ -18,14 +18,78 @@ import { API_BASE, getToken } from './api';
 
 let socket: Socket | null = null;
 
+/**
+ * The inbox row every edit and delete event carries.
+ *
+ * The server computes this **per recipient** and sends each participant their
+ * own copy, because once a message can be hidden for one side only, "the last
+ * message in this thread" has two different answers. Two consequences for
+ * handlers:
+ *
+ *  - Never derive a sidebar row from the event's message fields. A retraction
+ *    the viewer was not looking at leaves their preview untouched, and it
+ *    will say so here — the row is not necessarily "Message deleted".
+ *  - `previewFromMe` is the server's verdict on whether the viewer sent what
+ *    their row now shows, which after a delete may be a different message by
+ *    a different person. Recomputing it locally gets "You: " wrong.
+ */
+export interface PreviewRow {
+  preview: string;
+  previewAt: string | null;
+  previewFromMe: boolean;
+}
+
 /** Server → client events. Kept in one place so handlers can't drift. */
 export interface ServerEvents {
   'message:new': (message: unknown) => void;
   'message:read': (payload: { conversationId: string; readerId: string }) => void;
+  /**
+   * A message was reworded. Carries the new body rather than the whole
+   * message: the thread patches in place by id, and a partial payload cannot
+   * accidentally resurrect a field the recipient had already hidden.
+   */
+  'message:edited': (
+    payload: PreviewRow & {
+      messageId: string;
+      conversationId: string;
+      text: string;
+      editedAt: string;
+    },
+  ) => void;
+  /**
+   * A message was retracted for everyone. The bubble becomes a tombstone and
+   * stays in place — it is not removed, so the thread does not reflow under
+   * whoever happens to be reading it.
+   */
+  'message:deleted': (
+    payload: PreviewRow & {
+      messageId: string;
+      conversationId: string;
+      deletedAt: string;
+    },
+  ) => void;
+  /**
+   * I hid a message, on another device.
+   *
+   * Only ever delivered to the person who did it — the other participant is
+   * told nothing, which is what makes a per-user delete per-user. The bubble
+   * is removed outright here; there is no tombstone, because nothing was
+   * retracted from anyone.
+   */
+  'message:deletedForMe': (
+    payload: PreviewRow & { messageId: string; conversationId: string },
+  ) => void;
   /** The relay identifies the typist by id only — it has no conversation id. */
   'typing:start': (payload: { userId: string }) => void;
   'typing:stop': (payload: { userId: string }) => void;
   'notification:new': (notification: unknown) => void;
+  /**
+   * A notification was withdrawn — raised when the message behind it is
+   * retracted. The card is removed rather than tombstoned: unlike a bubble it
+   * marks no place in a conversation, so leaving a dead one behind is clutter
+   * pointing at nothing.
+   */
+  'notification:removed': (payload: { id: string }) => void;
   'notification:changed': (payload: { unread?: number }) => void;
   'follow:changed': (payload: { userId?: string }) => void;
 }

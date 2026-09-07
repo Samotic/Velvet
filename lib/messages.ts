@@ -99,3 +99,83 @@ export async function sendVoiceNote(userId: string, clip: Blob): Promise<DirectM
 export function markThreadRead(userId: string): Promise<void> {
   return api.put(`/api/messages/${userId}/read`).then(() => undefined);
 }
+
+/* ---------------------------- edit and delete ----------------------------- */
+
+/**
+ * How long a message stays editable and retractable.
+ *
+ * Mirrors `EDIT_WINDOW_MS` / `DELETE_WINDOW_MS` in
+ * backend/src/config/messaging.ts. Duplicated rather than fetched because the
+ * menu has to decide whether to offer Edit *before* any request is made — but
+ * it is only ever used to decide what to **show**. The server re-checks every
+ * call and answers 403, so a stale constant here can at worst offer an action
+ * that then fails honestly; it can never grant one.
+ */
+export const EDIT_WINDOW_MS = 48 * 60 * 60 * 1000;
+export const DELETE_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/** Whether `message` is still inside the window, for menu-building only. */
+export function withinWindow(createdAt: string, windowMs: number): boolean {
+  return Date.now() - new Date(createdAt).getTime() <= windowMs;
+}
+
+/**
+ * Whether the ⋯ menu should offer Edit.
+ *
+ * Text only, mine only, still in the window, and not already retracted — the
+ * same four conditions the server checks, in the same order.
+ */
+export function canEdit(m: DirectMessage, myId: string | null): boolean {
+  return (
+    m.senderId === myId &&
+    m.kind === 'text' &&
+    !m.deletedForEveryone &&
+    withinWindow(m.createdAt, EDIT_WINDOW_MS)
+  );
+}
+
+/**
+ * Whether the confirm sheet should offer "Delete for everyone".
+ *
+ * When this is false the sheet shows only "Delete for me" — never a disabled
+ * ghost button, which advertises a capability the viewer does not have and
+ * invites them to wonder why.
+ */
+export function canDeleteForEveryone(m: DirectMessage, myId: string | null): boolean {
+  return (
+    m.senderId === myId &&
+    !m.deletedForEveryone &&
+    withinWindow(m.createdAt, DELETE_WINDOW_MS)
+  );
+}
+
+/**
+ * Edits a message in place.
+ *
+ * Returns the server's copy rather than the text that was sent: an identical
+ * edit is answered 200 with `editedAt` untouched, so trusting the local string
+ * would paint an "edited" label the server does not agree with.
+ */
+export function editMessage(messageId: string, text: string): Promise<DirectMessage> {
+  return api
+    .patch<{ message: DirectMessage }>(`/api/messages/${messageId}`, { text })
+    .then((r) => r.message);
+}
+
+export type DeleteScope = 'me' | 'everyone';
+
+/**
+ * Deletes a message, one way or the other.
+ *
+ * `scope` is required with no default, mirroring the API. The two outcomes are
+ * not variations on each other — one changes what I see, the other destroys
+ * content for somebody else — so there is no sensible value to guess, and a
+ * caller that has not decided yet has no business calling this.
+ *
+ * Sent on the body rather than the query string so the scope cannot end up in
+ * a proxy access log alongside the message id.
+ */
+export function deleteMessage(messageId: string, scope: DeleteScope): Promise<void> {
+  return api.del(`/api/messages/${messageId}`, { body: { scope } }).then(() => undefined);
+}

@@ -205,8 +205,33 @@ export interface DirectMessage {
   mediaWidth: number | null;
   mediaHeight: number | null;
   read: boolean;
+  /**
+   * When the body was last edited; null means never. Drives the `edited`
+   * label, and it is the *only* signal for it — a client that inferred
+   * "edited" from anything else would disagree with the server the moment a
+   * no-op edit was rejected without stamping this.
+   */
+  editedAt: string | null;
+  /**
+   * The tombstone. When true the server has already cleared `text` and
+   * `mediaUrl`, so a renderer must branch on this **before** reading either:
+   * a deleted photo and a deleted voice note both arrive as an empty text
+   * message otherwise.
+   */
+  deletedForEveryone: boolean;
+  deletedAt: string | null;
+  deletedBy: string | null;
   createdAt: string;
 }
+
+/**
+ * `editHistory` and `deletedFor` are deliberately absent above.
+ *
+ * The server strips both in `Message.toJSON` — the first is the sender's own
+ * superseded drafts, the second would tell each participant what the other
+ * has hidden. A message deleted for me simply never arrives; there is no
+ * client-side filtering to do, and no type here should invite any.
+ */
 
 /* ------------------------------- activity -------------------------------- */
 

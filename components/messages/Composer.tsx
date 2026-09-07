@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { Camera, Close, Mic, Send, Smile, Stop } from '@/components/icons';
+import { Camera, Check, Close, Mic, Send, Smile, Stop } from '@/components/icons';
 import { MAX_VOICE_SECONDS } from '@/lib/messages';
 
 import type { useRecorder } from './useRecorder';
@@ -36,6 +36,8 @@ export function Composer({
   recorder,
   sending,
   attaching,
+  editing,
+  onCancelEdit,
 }: {
   draft: string;
   onDraft: (v: string) => void;
@@ -45,6 +47,10 @@ export function Composer({
   recorder: ReturnType<typeof useRecorder>;
   sending: boolean;
   attaching: boolean;
+  /** True while the composer is rewording an existing message rather than
+   *  writing a new one. Changes the primary action, not the layout. */
+  editing: boolean;
+  onCancelEdit: () => void;
 }) {
   const [showEmoji, setShowEmoji] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -122,7 +128,23 @@ export function Composer({
   return (
     <div className="chat-composer">
       <div className="chat-composer-inner">
-        <div className="chat-field">
+        {/*
+          The strip names what the field is doing, because in edit mode the
+          composer looks almost exactly as it does when writing a new message
+          and the only other cue is the checkmark. Dismissible here as well as
+          by Escape: a mouse user should not have to reach for the keyboard to
+          get out of a mode they entered with a click.
+        */}
+        {editing && (
+          <div className="edit-strip">
+            <span>Editing message</span>
+            <button type="button" onClick={onCancelEdit} aria-label="Cancel editing">
+              <Close />
+            </button>
+          </div>
+        )}
+
+        <div className={`chat-field${editing ? ' editing' : ''}`}>
           <div className="chat-emoji" ref={popRef}>
             <button
               type="button"
@@ -164,28 +186,38 @@ export function Composer({
               e.target.value = '';
             }}
           />
-          <button
-            type="button"
-            className="chat-icon"
-            onClick={() => fileRef.current?.click()}
-            disabled={attaching}
-            aria-label="Send a photo"
-          >
-            <Camera />
-          </button>
+          {/*
+            Both hidden while editing. An edit replaces a text body — there is
+            nothing for a photo or a recording to attach to, and the server
+            refuses a non-text edit outright, so offering them would be a
+            control whose only possible outcome is a 400.
+          */}
+          {!editing && (
+            <>
+              <button
+                type="button"
+                className="chat-icon"
+                onClick={() => fileRef.current?.click()}
+                disabled={attaching}
+                aria-label="Send a photo"
+              >
+                <Camera />
+              </button>
 
-          {/* Hidden rather than disabled where the browser cannot record: an
-              always-dead button is a worse answer than no button. */}
-          {recorder.supported && (
-            <button
-              type="button"
-              className="chat-icon"
-              onClick={onVoiceNote}
-              disabled={attaching}
-              aria-label="Record a voice message"
-            >
-              <Mic />
-            </button>
+              {/* Hidden rather than disabled where the browser cannot record: an
+                  always-dead button is a worse answer than no button. */}
+              {recorder.supported && (
+                <button
+                  type="button"
+                  className="chat-icon"
+                  onClick={onVoiceNote}
+                  disabled={attaching}
+                  aria-label="Record a voice message"
+                >
+                  <Mic />
+                </button>
+              )}
+            </>
           )}
 
           <textarea
@@ -197,20 +229,31 @@ export function Composer({
                 e.preventDefault();
                 onSend();
               }
+              // Escape leaves edit mode and puts back whatever was being
+              // typed before it started. Guarded on `editing` so it stays
+              // inert during ordinary composition.
+              if (e.key === 'Escape' && editing) {
+                e.preventDefault();
+                onCancelEdit();
+              }
             }}
-            placeholder={attaching ? 'Sending attachment' : 'Message'}
+            placeholder={
+              editing ? 'Edit your message' : attaching ? 'Sending attachment' : 'Message'
+            }
             rows={1}
-            aria-label="Write a message"
+            aria-label={editing ? 'Edit your message' : 'Write a message'}
           />
 
+          {/* Attachments are hidden in edit mode above; the action itself
+              changes too, so the icon changes with it. */}
           <button
             type="button"
             className="chat-send"
             disabled={empty || sending}
             onClick={onSend}
-            aria-label="Send message"
+            aria-label={editing ? 'Save edit' : 'Send message'}
           >
-            <Send />
+            {editing ? <Check /> : <Send />}
           </button>
         </div>
       </div>

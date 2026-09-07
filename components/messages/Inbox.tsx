@@ -7,6 +7,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { RowsSkeleton } from '@/components/ui/States';
 import { Search as SearchIcon } from '@/components/icons';
 import { timeAgo } from '@/lib/format';
+import { applyPreview, sortConversations } from '@/lib/messageEvents';
 import { getConversations } from '@/lib/messages';
 import type { Conversation } from '@/lib/contentTypes';
 import { onSocket } from '@/lib/socket';
@@ -37,6 +38,35 @@ export function Inbox({ activeUserId }: { activeUserId?: string }) {
   }, [load]);
 
   useEffect(() => onSocket('message:new', () => load()), [load]);
+
+  /**
+   * Edits and deletes patch the affected row in place rather than refetching.
+   *
+   * The three events already carry this viewer's own preview — computed
+   * server-side, because once a message can be hidden for one participant the
+   * row has two different correct answers. Applying the payload is therefore
+   * both cheaper than a reload *and* the only way to get "You: " right: after
+   * a delete the row may belong to a different message by a different person,
+   * which nothing on this client can work out for itself.
+   *
+   * Re-sorted after every patch because `previewAt` can move **backwards** —
+   * hiding a message uncovers an older one — so the existing order is not
+   * safe to assume.
+   */
+  useEffect(() => {
+    const patch = (p: Parameters<typeof applyPreview>[1]) =>
+      setItems((prev) => (prev ? sortConversations(applyPreview(prev, p)) : prev));
+
+    const offEdited = onSocket('message:edited', patch);
+    const offDeleted = onSocket('message:deleted', patch);
+    const offForMe = onSocket('message:deletedForMe', patch);
+
+    return () => {
+      offEdited();
+      offDeleted();
+      offForMe();
+    };
+  }, []);
 
   const filtered = (items ?? []).filter((c) => {
     const term = q.trim().toLowerCase();
