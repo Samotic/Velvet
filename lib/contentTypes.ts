@@ -264,6 +264,15 @@ export interface AiMessage {
 /** What `POST /api/ai/chat` returns. */
 export interface AiChatResponse {
   message: AiMessage;
+  /**
+   * The stored user turn.
+   *
+   * Redundant for a typed question, which the client already showed
+   * optimistically. Load-bearing for a spoken one: the transcript is produced
+   * server-side, so this is the only way the asker sees what was heard — which
+   * matters most when it was heard wrong.
+   */
+  userMessage: AiMessage;
   /** Remaining free messages today; null when the user is Pro (unlimited). */
   remaining: number | null;
 }

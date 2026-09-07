@@ -2,6 +2,9 @@
 
 import { api } from './api';
 import type { AiChatResponse, AiMessage } from './contentTypes';
+// The same encoder direct messages use. A voice note is a voice note; having
+// two ways to turn a Blob into a data URL is how the two paths drift.
+import { toDataUrl } from './messages';
 
 /**
  * The AI advisor's client.
@@ -36,7 +39,57 @@ export function sendAiMessage(
   message: string,
   context?: { contentId: string; contentType: string; contentTitle: string },
 ): Promise<AiChatResponse> {
-  return api.post<AiChatResponse>('/api/ai/chat', { message, context });
+  return api.post<AiChatResponse>('/api/ai/chat', { message, context, timeZone: timeZone() });
+}
+
+/**
+ * The browser's IANA zone, sent with every turn.
+ *
+ * The advisor is told the current date so it stops answering "what's out now"
+ * against its training cutoff, and that date has to be resolved in the user's
+ * zone rather than the server's — a host in UTC puts someone in Istanbul a day
+ * out for most of the evening, which is exactly when the question gets asked.
+ *
+ * Wrapped because `resolvedOptions()` can throw on very old engines, and a
+ * missing zone is a server-side fallback to UTC, not a failed message.
+ */
+function timeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The daily allowance, mirroring `AI_FREE_DAILY_MESSAGES` on the server.
+ *
+ * Only ever used for the line under the composer *before* the first reply of a
+ * session tells us the real remaining count. The server owns the limit and
+ * enforces it, so a stale value here can misstate the total for one message
+ * and never grant one.
+ */
+export const AI_DAILY_MESSAGES = 25;
+
+/** Matches `MAX_AUDIO_BYTES` / the recorder ceiling used by direct messages. */
+export const MAX_AI_VOICE_BYTES = 3 * 1024 * 1024;
+
+/**
+ * Asks the advisor a spoken question.
+ *
+ * The clip is transcribed server-side and everything after that is an ordinary
+ * text turn — which is why this returns the same shape as `sendAiMessage` and
+ * the caller does not have to branch on how the question was asked.
+ */
+export async function sendAiVoiceNote(clip: Blob): Promise<AiChatResponse> {
+  if (clip.size > MAX_AI_VOICE_BYTES) throw new Error('That recording is too long');
+
+  const media = await toDataUrl(clip);
+  return api.post<AiChatResponse>('/api/ai/chat', {
+    kind: 'audio',
+    media,
+    timeZone: timeZone(),
+  });
 }
 
 /**

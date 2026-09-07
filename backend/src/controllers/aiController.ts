@@ -10,8 +10,11 @@ import {
   askAdvisor,
   extractTitles,
   followUps,
+  supportsVoice,
+  transcribe,
   type TasteProfile,
 } from '../lib/ai';
+import { isValidAudioDataUrl, stripMimeParams } from '../services/cloudinary';
 import * as tmdb from '../services/tmdb';
 import { recentTitles, topRatedTitles, userStats } from '../services/stats';
 import { fail, ok } from '../utils/http';
@@ -23,6 +26,9 @@ import { clean, str } from '../utils/validation';
  * One user message costs one model call, which is what the daily quota counts.
  * Follow-up chips are derived locally for the same reason.
  */
+
+/** Same ceiling a typed question gets, applied to a transcript too. */
+const MAX_ADVISOR_MESSAGE = 2000;
 
 /** How many prior turns to replay as context. */
 const HISTORY_TURNS = 10;
@@ -135,10 +141,36 @@ async function linkTitles(text: string): Promise<string> {
 export async function chat(req: Request, res: Response): Promise<Response> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const message = clean(body.message, 2000);
-    if (!message) return fail(res, 'Ask me something first', 422);
-
     const userId = req.user!.userId;
+
+    /**
+     * A spoken question becomes a written one here, at the edge, and nothing
+     * downstream knows the difference: history, `[[Title]]` extraction, the
+     * follow-up chips and the quota all see an ordinary text turn.
+     *
+     * Transcribed **before** the quota is consumed, so a clip that turns out
+     * to contain no speech costs the user nothing from their daily allowance.
+     * It has already cost a model call, which is why the empty case returns
+     * rather than falling through to a second one.
+     */
+    let message: string;
+
+    if (body.kind === 'audio') {
+      if (!supportsVoice) return fail(res, 'Voice messages are not available here', 400);
+      if (!isValidAudioDataUrl(body.media)) return fail(res, 'That recording is not valid', 422);
+
+      const normalised = stripMimeParams(body.media);
+      const [header, data] = normalised.split(';base64,');
+      const spoken = await transcribe({ data, mimeType: header.replace('data:', '') });
+
+      // Sanitised like any other user text: it is model output about to be
+      // stored and replayed, and the same rules apply to it as to typing.
+      message = clean(spoken, MAX_ADVISOR_MESSAGE);
+      if (!message) return fail(res, "I couldn't hear anything in that recording", 422);
+    } else {
+      message = clean(body.message, MAX_ADVISOR_MESSAGE);
+      if (!message) return fail(res, 'Ask me something first', 422);
+    }
 
     const profile = await tasteProfile(userId);
     if (!profile) return fail(res, 'User not found', 404);
@@ -166,6 +198,10 @@ export async function chat(req: Request, res: Response): Promise<Response> {
       history: history.reverse().map((h) => ({ role: h.role, content: h.content })),
       message,
       filmContext,
+      // Straight from the browser. "Tonight" has to mean the user's tonight,
+      // and the server's own clock is a deployment detail that would put them
+      // a day out for a good part of every evening.
+      timeZone: str(body.timeZone),
     });
 
     const linked = await linkTitles(reply);
@@ -173,7 +209,12 @@ export async function chat(req: Request, res: Response): Promise<Response> {
 
     // Persist both turns so the log survives a reload and the next request has
     // context. The user turn is stored first so ordering is stable.
-    await AIChatMessage.create({ userId, role: 'user', content: message, suggestions: [] });
+    const asked = await AIChatMessage.create({
+      userId,
+      role: 'user',
+      content: message,
+      suggestions: [],
+    });
     const saved = await AIChatMessage.create({
       userId,
       role: 'assistant',
@@ -181,7 +222,19 @@ export async function chat(req: Request, res: Response): Promise<Response> {
       suggestions,
     });
 
-    return ok(res, { message: saved.toJSON(), remaining: quota.remaining });
+    /**
+     * The user's turn is returned as well as the assistant's.
+     *
+     * A typed question is already on screen optimistically and the client
+     * ignores this. A spoken one is not: nobody knows what a clip says until
+     * it has been transcribed, so this is the only way the asker gets to see
+     * what was actually heard — which matters most when it was heard wrong.
+     */
+    return ok(res, {
+      message: saved.toJSON(),
+      userMessage: asked.toJSON(),
+      remaining: quota.remaining,
+    });
   } catch (err) {
     if (err instanceof AiNotConfiguredError) return fail(res, err.message, 503);
 

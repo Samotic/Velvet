@@ -19,6 +19,7 @@ import {
   logCall,
   withRetry,
   type AIProvider,
+  type AudioInput,
   type ChatMessage,
   type ChatOptions,
   type ChatResult,
@@ -70,6 +71,18 @@ const SAFETY_SETTINGS: SafetySetting[] = [
 const MAX_OUTPUT_TOKENS = 2048;
 
 /**
+ * The floor the pinned model accepts, in one place.
+ *
+ * Reasoning tokens bill at the output rate and the advisor writes two short
+ * paragraphs, so the level wants to be as low as the model allows — but
+ * `gemini-3.7-flash` rejects `MINIMAL` outright with a 400. Every call site
+ * reads this rather than choosing its own: a second literal is a second thing
+ * to remember when the pinned model moves, and the failure is a hard 400 on a
+ * path that may not be exercised often.
+ */
+const THINKING_LEVEL = ThinkingLevel.LOW;
+
+/**
  * Anthropic's `assistant` is Gemini's `model`. Converted at the boundary so
  * nothing above `AIProvider` has to know either vocabulary.
  */
@@ -90,11 +103,9 @@ function buildConfig(opts: ChatOptions) {
     maxOutputTokens: opts.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
     ...(opts.system ? { systemInstruction: opts.system } : {}),
     ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-    // The advisor writes a couple of short paragraphs. Reasoning tokens are
-    // billed at the output rate, so the level is kept at the floor this model
-    // accepts — gemini-3.7-flash rejects MINIMAL with a 400, so LOW is the
-    // floor here. Re-check when the pinned model moves.
-    thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+    // See THINKING_LEVEL: the floor the pinned model accepts, shared with the
+    // transcription call so the two cannot drift apart.
+    thinkingConfig: { thinkingLevel: THINKING_LEVEL },
     // Native schema-constrained output. When a caller asks for JSON it cannot
     // come back malformed, so no caller ever needs to strip fences or parse
     // JSON out of prose.
@@ -191,6 +202,63 @@ export const geminiProvider: AIProvider = {
 
     logCall('gemini', result, startedAt);
     return result;
+  },
+
+  /**
+   * Speech to text, as its own call.
+   *
+   * Deliberately bare: no system prompt, no taste profile, no history. The job
+   * is to hear words, and handing it the advisor's persona invites it to
+   * answer the question instead of writing it down — which then gets stored as
+   * what the user said.
+   *
+   * `maxOutputTokens` is small on purpose. A transcript of a voice note capped
+   * at two minutes cannot be long, and an unbounded ceiling on a call that
+   * should return a sentence is how a stuck model becomes a bill.
+   */
+  async transcribe(audio: AudioInput): Promise<string> {
+    const ai = getClient();
+    const startedAt = Date.now();
+
+    const response = await withRetry('gemini.transcribe', async () => {
+      try {
+        return await ai.models.generateContent({
+          model: env.geminiModel,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { inlineData: { mimeType: audio.mimeType, data: audio.data } },
+                {
+                  text:
+                    'Transcribe this audio verbatim. Reply with the transcription only — ' +
+                    'no preamble, no quotation marks, no commentary. If there is no ' +
+                    'intelligible speech, reply with nothing at all.',
+                },
+              ],
+            },
+          ],
+          config: {
+            safetySettings: SAFETY_SETTINGS,
+            thinkingConfig: { thinkingLevel: THINKING_LEVEL },
+            maxOutputTokens: 600,
+            temperature: 0,
+          },
+        });
+      } catch (err) {
+        throw toAIError(err);
+      }
+    });
+
+    const { text, finishReason } = extractText(response);
+
+    logCall(
+      'gemini',
+      { ...usage(response), model: env.geminiModel, finishReason },
+      startedAt,
+    );
+
+    return text.trim();
   },
 
   /**

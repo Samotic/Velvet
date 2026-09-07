@@ -31,11 +31,27 @@ export interface ChatResult {
   finishReason: string;
 }
 
+/** A recorded clip on its way to a model that can hear. */
+export interface AudioInput {
+  /** base64, with no `data:` prefix — the wire format both vendors want. */
+  data: string;
+  mimeType: string;
+}
+
 export interface AIProvider {
   /** Human-readable name, for logs and error messages. */
   readonly name: 'gemini' | 'anthropic';
   chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
   stream(messages: ChatMessage[], opts?: ChatOptions): AsyncIterable<string>;
+  /**
+   * Speech to text, when the provider can do it.
+   *
+   * Optional on the interface rather than required-and-throwing, so
+   * "can this provider hear?" is a property the UI can read instead of an
+   * error it has to provoke. Anthropic has no audio input, so it omits this
+   * and the advisor hides the microphone.
+   */
+  transcribe?(audio: AudioInput): Promise<string>;
 }
 
 /* --------------------------------- errors --------------------------------- */

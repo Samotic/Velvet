@@ -7,10 +7,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { useToast } from '@/components/Toast';
-import { Send, Sparkle, VelvetMark } from '@/components/icons';
+import { Close, Mic, Send, Sparkle, Stop, VelvetMark } from '@/components/icons';
 import { Avatar } from '@/components/ui/Avatar';
 import { ApiError } from '@/lib/api';
-import { getAiHistory, parseAiContent, sendAiMessage, SUGGESTED_QUESTIONS } from '@/lib/ai';
+import {
+  AI_DAILY_MESSAGES,
+  getAiHistory,
+  parseAiContent,
+  sendAiMessage,
+  sendAiVoiceNote,
+  SUGGESTED_QUESTIONS,
+} from '@/lib/ai';
+import { useRecorder } from '@/components/messages/useRecorder';
+import { MAX_VOICE_SECONDS } from '@/lib/messages';
 import type { AiMessage, WatchStats } from '@/lib/contentTypes';
 import { moodLabel } from '@/lib/onboarding';
 import { getWatchStats } from '@/lib/ratings';
@@ -117,6 +126,49 @@ function Advisor() {
     autoSent.current = true;
     void send(q);
   }, [ready, params, send]);
+
+  /**
+   * Asks a spoken question.
+   *
+   * No optimistic bubble, unlike the typed path: until the server has
+   * transcribed the clip nobody — including the person who recorded it —
+   * knows what it says, so there is nothing honest to show. The thinking
+   * indicator covers the wait, and the user's turn arrives already written.
+   */
+  const sendClip = useCallback(
+    async (clip: Blob | null) => {
+      if (!clip || thinking) return;
+
+      setThinking(true);
+      try {
+        const res = await sendAiVoiceNote(clip);
+        // Both turns: the transcript the server heard, then the reply to it.
+        setMessages((prev) => [...prev, ...(res.userMessage ? [res.userMessage] : []), res.message]);
+        setRemaining(res.remaining);
+      } catch (err) {
+        toast.bad(err instanceof ApiError ? err.message : 'The advisor could not hear that');
+      } finally {
+        setThinking(false);
+        inputRef.current?.focus();
+      }
+    },
+    [thinking, toast],
+  );
+
+  const sendClipRef = useRef<(clip: Blob | null) => void>(() => {});
+  const recorder = useRecorder({ onAutoStop: (clip) => sendClipRef.current(clip) });
+  useEffect(() => {
+    sendClipRef.current = (clip) => void sendClip(clip);
+  }, [sendClip]);
+
+  /** Starts recording, or ends the one in progress and sends it. */
+  async function onVoice() {
+    if (recorder.recording) {
+      await sendClip(await recorder.stop());
+      return;
+    }
+    if (!(await recorder.start())) toast.bad('Velvet could not reach your microphone');
+  }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     // Enter sends; Shift+Enter is a newline.
@@ -268,33 +320,78 @@ function Advisor() {
         </div>
 
         <div className="composer">
-          <div className="composer-row">
-            <textarea
-              ref={inputRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder="What are you in the mood for?"
-              rows={1}
-              aria-label="Message the advisor"
-            />
-            <button
-              type="button"
-              className="send-btn"
-              disabled={!draft.trim() || thinking}
-              onClick={() => void send(draft)}
-              aria-label="Send"
-            >
-              <Send />
-            </button>
-          </div>
+          {recorder.recording ? (
+            /* The field is replaced rather than disabled: there is nothing to
+               type into while recording, and a dead textarea beside a live
+               timer invites the user to try. */
+            <div className="composer-row recording">
+              <button
+                type="button"
+                className="ai-mic"
+                onClick={recorder.cancel}
+                aria-label="Discard recording"
+              >
+                <Close />
+              </button>
+              <div className="rec-state">
+                <span className="rec-dot" aria-hidden="true" />
+                <span className="rec-time">
+                  {Math.floor(recorder.seconds / 60)}:
+                  {String(recorder.seconds % 60).padStart(2, '0')}
+                </span>
+                <span className="rec-hint">{MAX_VOICE_SECONDS - recorder.seconds}s left</span>
+              </div>
+              <button
+                type="button"
+                className="send-btn"
+                onClick={() => void onVoice()}
+                aria-label="Send voice question"
+              >
+                <Stop />
+              </button>
+            </div>
+          ) : (
+            <div className="composer-row">
+              <textarea
+                ref={inputRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder="What are you in the mood for?"
+                rows={1}
+                aria-label="Message the advisor"
+              />
+              {/* Hidden where the browser cannot record — `getUserMedia` needs a
+                  secure context, so on plain http this button could only fail. */}
+              {recorder.supported && (
+                <button
+                  type="button"
+                  className="ai-mic"
+                  disabled={thinking}
+                  onClick={() => void onVoice()}
+                  aria-label="Ask by voice"
+                >
+                  <Mic />
+                </button>
+              )}
+              <button
+                type="button"
+                className="send-btn"
+                disabled={!draft.trim() || thinking}
+                onClick={() => void send(draft)}
+                aria-label="Send"
+              >
+                <Send />
+              </button>
+            </div>
+          )}
 
           <p className="composer-note">
             {isPro
               ? 'Unlimited messages'
               : remaining !== null
                 ? `${remaining} ${remaining === 1 ? 'message' : 'messages'} left today`
-                : '10 messages a day · resets each morning'}
+                : `${AI_DAILY_MESSAGES} messages a day · resets each morning`}
           </p>
         </div>
       </div>

@@ -84,7 +84,7 @@ export const env = {
    * so this cap is the only thing bounding what the model costs the operator —
    * accounts with `isPro` set by hand are the sole exemption.
    */
-  aiFreeDailyMessages: Number(process.env.AI_FREE_DAILY_MESSAGES) || 10,
+  aiFreeDailyMessages: Number(process.env.AI_FREE_DAILY_MESSAGES) || 25,
 
   /* --- uploads --- */
   cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME ?? '',

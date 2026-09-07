@@ -8,6 +8,8 @@
  * provider modules.
  */
 
+import { currentMoment } from './clock';
+
 /** Everything the system prompt interpolates about the person asking. */
 export interface TasteProfile {
   displayName: string;
@@ -42,7 +44,11 @@ const list = (v: string[]) => (v.length ? v.join(', ') : 'none yet');
  * instruction, so there was nothing Claude-shaped to unpick: it asks for prose
  * with `[[Title]]` markers, which both model families handle.
  */
-export function buildSystemPrompt(p: TasteProfile, filmContext?: string): string {
+export function buildSystemPrompt(
+  p: TasteProfile,
+  filmContext?: string,
+  timeZone?: string | null,
+): string {
   const base = `You are Velvet's personal film and entertainment advisor.
 You are warm, knowledgeable, opinionated, and conversational —
 like a brilliant film-obsessed friend, not a corporate chatbot.
@@ -73,10 +79,31 @@ When you name a film, series or game you are recommending, wrap the title in
 double square brackets like [[The Brutalist]] so the app can link it. Use that
 form only for titles you are actually recommending, not for passing mentions.`;
 
+  /**
+   * The clock, stated plainly.
+   *
+   * A model has no sense of now. Without this, every question touching
+   * "today", "tonight", "this week" or "new" is answered against the training
+   * cutoff — and nothing in the reply signals that a date was assumed, which
+   * is what makes it worse than an admission of not knowing.
+   *
+   * The instruction to trust this line over its own sense of the date is the
+   * load-bearing half: handed a date it finds implausible, a model will
+   * otherwise hedge or argue with it rather than use it.
+   */
+  const clock = `Right now it is ${currentMoment(timeZone)}.
+Treat that as the current date and time. It is authoritative, it comes from the
+user's own device, and it is more recent than your training data. Use it for
+anything that depends on the date: what is out now, what is still upcoming,
+what released this year, anniversaries, seasons, and what "tonight" means. If
+you are asked the date or the day of the week, answer from that line directly.`;
+
+  const withClock = `${base}\n\n${clock}`;
+
   // The detail screen's "Ask AI" seeds the conversation with the title in view.
   return filmContext
-    ? `${base}\n\nThe user is currently looking at: ${filmContext}. Ground your answer in that title unless they ask about something else.`
-    : base;
+    ? `${withClock}\n\nThe user is currently looking at: ${filmContext}. Ground your answer in that title unless they ask about something else.`
+    : withClock;
 }
 
 /**

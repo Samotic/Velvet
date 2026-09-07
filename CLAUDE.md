@@ -505,10 +505,12 @@ affordance.
 database to lift the advisor's daily cap for the operator or a trusted account.
 It is not purchasable and nothing in the UI offers it.
 
-That makes `AI_FREE_DAILY_MESSAGES` (default 10, in
-`backend/src/controllers/aiController.ts`) load-bearing: with no revenue, it is
-the only bound on what the model costs the person running the server. Raising it
-or exempting more accounts spends real money.
+That makes `AI_FREE_DAILY_MESSAGES` (default 25, in
+`backend/src/config/env.ts`) load-bearing: with no revenue, it is the only bound
+on what the model costs the person running the server. Raising it or exempting
+more accounts spends real money. A **voice** question costs two calls, not one —
+transcription then the answer — while still consuming one message of the
+allowance.
 
 ---
 
@@ -555,5 +557,20 @@ resolves to Gemini rather than silently falling back to the retired provider.
   not be "upgraded" to `responseSchema`, which would change the reply into a
   shape the UI cannot render and `linkTitles` cannot rewrite. `ChatOptions.json`
   + `schema` exist for any future caller that genuinely wants structured output.
+- **The advisor is told the date, and told to trust it.** `lib/ai/clock.ts`
+  writes the weekday, full date and time into the system prompt, resolved in
+  the **browser's** IANA zone (sent as `timeZone` on every turn), because the
+  server's clock is a deployment detail and a UTC host puts a user in Istanbul
+  a day out for most of the evening. Without it every "what's out now" is
+  answered against the training cutoff with nothing in the reply to say so. An
+  unrecognised zone falls back to UTC rather than throwing.
+- **A spoken question becomes text at the edge.** `POST /api/ai/chat` accepts
+  `{ kind: 'audio', media }` and transcribes it via `provider.transcribe`
+  before anything else runs, so history replay, `[[Title]]` extraction, the
+  follow-up chips and the quota all see an ordinary text turn. Transcription
+  happens **before** the quota is consumed, so a clip with no speech in it
+  costs the user nothing. `transcribe` is optional on `AIProvider` — Anthropic
+  has no audio input and omits it, and `supportsVoice` is what lets the UI hide
+  the microphone instead of offering a button that can only fail.
 - **`/api/ai/picks` is not a model call** and never should be — it renders on
   every home view. It is TMDB discover filtered by the user's genres.

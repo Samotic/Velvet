@@ -6179,6 +6179,52 @@ input[type='range']::-moz-range-thumb {
   border-color: var(--chat-text);
 }
 
+
+/* --- advisor: voice input -------------------------------------------------
+   The advisor composer is `.composer`, not `.chat-*` — two rule sets on
+   purpose, so a DM change cannot restyle this screen. That means the recording
+   indicator cannot borrow the chat tokens it uses inside .msg-shell: they are
+   valid there and nowhere else. These two rules put it back on the indigo ramp. */
+.composer .rec-time {
+  color: var(--v-display);
+}
+.composer .rec-hint {
+  color: var(--v-mist);
+}
+.composer-row.recording {
+  padding-left: 6px;
+}
+
+/* Ghost icon button beside the field. The filled accent belongs to the send
+   button alone, so this reads as accent only on hover, where it is being used. */
+.ai-mic {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--v-mist);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.ai-mic:hover:not(:disabled) {
+  color: var(--v-accent);
+  border-color: var(--line-accent);
+  background: var(--card-hover);
+}
+.ai-mic:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ai-mic svg {
+  width: 18px;
+  height: 18px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
