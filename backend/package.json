@@ -18,7 +18,8 @@
     "verify:ai": "tsx scripts/verify-ai.ts",
     "verify:account": "tsx scripts/verifyAccount.ts",
     "verify:messages": "tsx scripts/verify-message-edit-delete.ts",
-    "verify:privacy": "tsx scripts/verify-privacy.ts"
+    "verify:privacy": "tsx scripts/verify-privacy.ts",
+    "verify:quota": "tsx scripts/verify-ai-quota.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

@@ -181,9 +181,20 @@ async function linkTitles(text: string): Promise<string> {
 
 /** POST /api/ai/chat */
 export async function chat(req: Request, res: Response): Promise<Response> {
+  /**
+   * Whether this request has already taken a message from the allowance.
+   *
+   * Declared outside the `try` so the catch below can give it back. Every
+   * failure after this point — the transcription throwing, Gemini being down
+   * or refusing, a write failing — is one where the user was charged a message
+   * and received no answer, and the allowance is the one thing they cannot get
+   * back by retrying.
+   */
+  let consumed = false;
+  const userId = req.user!.userId;
+
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const userId = req.user!.userId;
 
     /**
      * Everything that can be rejected without spending money is rejected here,
@@ -222,7 +233,12 @@ export async function chat(req: Request, res: Response): Promise<Response> {
         `That's your ${env.aiFreeDailyMessages} advisor messages for today — the count resets tomorrow.`,
         429,
       );
+      // Nothing was taken on this branch, so `consumed` stays false.
     }
+
+    // From here on the user has paid for this request. Any failure below owes
+    // them the message back — see the catch.
+    consumed = true;
 
     /**
      * A spoken question becomes a written one here, and nothing downstream
@@ -241,8 +257,10 @@ export async function chat(req: Request, res: Response): Promise<Response> {
       message = clean(spoken, MAX_ADVISOR_MESSAGE);
       if (!message) {
         // Silence is not a question. The call is already paid for, but the
-        // user should not lose a message to it.
+        // user should not lose a message to it. The flag is cleared so the
+        // catch cannot refund the same message a second time.
         await refundQuota(userId);
+        consumed = false;
         return fail(res, "I couldn't hear anything in that recording", 422);
       }
     } else {
@@ -301,6 +319,22 @@ export async function chat(req: Request, res: Response): Promise<Response> {
       remaining: quota.remaining,
     });
   } catch (err) {
+    /**
+     * Give the message back before answering.
+     *
+     * Every throw reachable from here happens **after** the allowance was
+     * taken and **before** a reply was stored: the transcription failing or
+     * timing out, Gemini being unreachable, a safety refusal, the title
+     * lookup or the write throwing. In each case the user was charged for an
+     * answer they never received, and unlike the request itself the allowance
+     * is not something they can get back by trying again.
+     *
+     * Awaited rather than fired off, so the count is correct by the time the
+     * client reads `remaining` on its next call. It is one indexed update, and
+     * this path is already the slow one.
+     */
+    if (consumed) await refundQuota(userId).catch(() => {});
+
     if (err instanceof AiNotConfiguredError) return fail(res, err.message, 503);
 
     // A refusal is an outcome, not a fault. Gemini's filters can fire on the

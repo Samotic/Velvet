@@ -109,6 +109,35 @@ in the build cache — if you change it, redeploy without the cache.
 
 ---
 
+## Proxy hops — read this before putting anything in front of Railway
+
+`backend/src/app.ts` sets **`app.set('trust proxy', 1)`**. It is a code
+constant, not an environment variable, and it encodes an assumption about your
+hosting that will not announce itself when it stops being true.
+
+**Why it exists.** Every request on Railway arrives through the platform's
+edge. Without this, `req.ip` is the *proxy's* address for every caller alike,
+so every IP-keyed rate limiter shares one bucket — the auth limiter's 50
+attempts per 15 minutes becomes 50 for the entire internet, and the first burst
+of real traffic locks everyone out of signing in. It reads as an outage, not as
+a limiter working.
+
+**Why `1` and not `true`.** `true` trusts the whole `X-Forwarded-For` chain,
+which the client writes. An attacker could then put any address at the front
+and step around every limit by rotating a header. `1` trusts the platform edge
+and nothing beyond it.
+
+**When you must change it.** The number is the count of proxies in front of
+this service. Put a CDN or another reverse proxy ahead of Railway —
+Cloudflare, a custom domain proxy, an API gateway — and there are two hops, so
+it must become `2`. Leave it at `1` and the limiters start keying on the CDN's
+address instead of the visitor's: everyone shares a bucket again, and the
+symptom is the same false lockout as having no setting at all.
+
+**Nothing will tell you.** There is no error and no log line for this — the
+limiters simply key on the wrong thing. If you add a layer in front, change
+the number in the same commit.
+
 ## HTTPS is not optional
 
 Voice notes and the advisor's microphone use `getUserMedia`, which browsers
