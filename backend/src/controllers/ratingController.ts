@@ -7,7 +7,7 @@ import { computeNeighborsForUser, needsRecompute } from '../lib/cf/neighbors';
 import { recomputeUserStats } from '../lib/cf/stats';
 import { viewerId } from '../middleware/auth';
 import { userStats } from '../services/stats';
-import { checkViewById, PRIVATE_MESSAGE } from '../services/visibility';
+import { checkViewById, PRIVATE_MESSAGE, visibleAuthors } from '../services/visibility';
 import { fail, ok } from '../utils/http';
 import { notify } from '../utils/notify';
 import { distribution, review as toReview } from '../utils/serialize';
@@ -234,7 +234,25 @@ export async function contentReviews(req: Request, res: Response): Promise<Respo
       .populate('replies.userId', AUTHOR);
 
     const viewer = viewerId(req);
-    let reviews = rows.map((r) => toReview(r.toObject(), viewer));
+
+    /**
+     * A private account's reviews are its content, reached from the other
+     * direction.
+     *
+     * `GET /ratings/user/:userId` was gated and this was not, so the same text
+     * and the same username were still readable on any film's page — by
+     * anyone, signed in or not. Same rule, applied in batch so a hundred
+     * authors cost two queries rather than a hundred.
+     */
+    // `userId` is populated, so the id is one level in; falling back to the
+    // field itself covers a row whose author no longer exists to populate.
+    const authorOf = (r: { userId: unknown }): string =>
+      String((r.userId as { _id?: unknown } | null)?._id ?? r.userId ?? '');
+
+    const allowed = await visibleAuthors(viewer, rows.map(authorOf));
+    const visible = rows.filter((r) => allowed.has(authorOf(r)));
+
+    let reviews = visible.map((r) => toReview(r.toObject(), viewer));
 
     // Sorting by popularity happens here rather than in Mongo: `likes` is an
     // array, so ordering by its length would need an aggregation pipeline for
@@ -259,6 +277,17 @@ export async function toggleLike(req: Request, res: Response): Promise<Response>
     const me = new Types.ObjectId(req.user!.userId);
     const doc = await Rating.findById(id).select('likes userId contentTitle contentId contentType');
     if (!doc) return fail(res, 'Review not found', 404);
+
+    /**
+     * You cannot like what you are not allowed to read.
+     *
+     * Gating the list but not the write leaves the whole thing open to anyone
+     * holding a review id: liking raises a notification on the author, which
+     * is both an interaction they did not consent to and a confirmation that
+     * the id is real.
+     */
+    const view = await checkViewById(req.user!.userId, String(doc.userId));
+    if (!view.ok) return fail(res, PRIVATE_MESSAGE, 403);
 
     const liked = doc.likes.some((l) => String(l) === req.user!.userId);
 
@@ -295,6 +324,20 @@ export async function reply(req: Request, res: Response): Promise<Response> {
 
     const text = clean((req.body ?? {}).text, 1000);
     if (!text) return fail(res, 'Write something first', 422);
+
+    /**
+     * Checked before the write, not after.
+     *
+     * This used to `findByIdAndUpdate` straight away, so a reply to a private
+     * account's review was already stored by the time anything could object —
+     * and a rejection afterwards would have left the text in the document.
+     * The extra read is the cost of the write being conditional.
+     */
+    const target = await Rating.findById(id).select('userId').lean();
+    if (!target) return fail(res, 'Review not found', 404);
+
+    const view = await checkViewById(req.user!.userId, String(target.userId));
+    if (!view.ok) return fail(res, PRIVATE_MESSAGE, 403);
 
     const doc = await Rating.findByIdAndUpdate(
       id,

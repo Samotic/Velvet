@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 
+import { Follow } from '../models/Follow';
 import { User } from '../models/User';
 import { relationBetween } from './social';
 
@@ -78,6 +79,60 @@ export async function checkViewById(
   return allowed
     ? { ok: true, owner: owner as VisibilitySubject }
     : { ok: false, reason: 'private' };
+}
+
+/**
+ * The same rule, asked about many authors at once.
+ *
+ * A list of reviews on a film carries up to a hundred different authors, and
+ * calling `canViewContent` per row would be a hundred round trips on a page
+ * that renders for anyone. This answers in two queries regardless of the
+ * count: one for the authors' visibility, one for the viewer's accepted edges
+ * among whichever of them are private.
+ *
+ * It is deliberately the *same* three conditions as `canViewContent` — public,
+ * self, accepted follower — expressed as a set membership instead of a
+ * lookup. If that rule ever changes it has to change in both, which is why
+ * they sit next to each other in one file rather than one living beside its
+ * caller.
+ *
+ * Returns the subset of `authorIds` the viewer is allowed to see.
+ */
+export async function visibleAuthors(
+  viewerId: string | null,
+  authorIds: (Types.ObjectId | string)[],
+): Promise<Set<string>> {
+  const wanted = [...new Set(authorIds.map(String))].filter((id) => Types.ObjectId.isValid(id));
+  if (!wanted.length) return new Set();
+
+  const owners = await User.find({ _id: { $in: wanted } })
+    .select('_id profileVisibility')
+    .lean();
+
+  const allowed = new Set<string>();
+  const privateIds: string[] = [];
+
+  for (const owner of owners) {
+    const id = String(owner._id);
+    if ((owner.profileVisibility ?? 'public') === 'public') allowed.add(id);
+    else if (viewerId && id === viewerId) allowed.add(id);
+    else privateIds.push(id);
+  }
+
+  // Anonymous viewers never clear a private account, so the second query is
+  // skipped outright rather than run with a null follower.
+  if (!viewerId || !privateIds.length) return allowed;
+
+  const edges = await Follow.find({
+    followerId: new Types.ObjectId(viewerId),
+    followingId: { $in: privateIds.map((id) => new Types.ObjectId(id)) },
+    status: 'accepted',
+  })
+    .select('followingId')
+    .lean();
+
+  for (const edge of edges) allowed.add(String(edge.followingId));
+  return allowed;
 }
 
 /** The one sentence every restricted endpoint answers with. */

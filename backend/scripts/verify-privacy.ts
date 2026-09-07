@@ -183,6 +183,57 @@ async function run(): Promise<void> {
       check('self sees the full profile', r.status === 200 && !r.body.data.user.restricted);
     }
 
+    /* --- 7. the same content, reached from the film -------------------- */
+
+    section('A private review does not surface on the film page');
+    {
+      // Both accounts reviewed the same title, so the only thing separating
+      // them in this response is the visibility rule.
+      const anon = await asAnon('/api/reviews/content/movie/123');
+      const names = (r: { body: { data: { reviews: { user: { username: string } | null }[] } } }) =>
+        r.body.data.reviews.map((x) => x.user?.username);
+
+      check('anon sees the public review', names(anon).includes('pub'));
+      check('anon does NOT see the private one', !names(anon).includes('priv'));
+
+      const asStranger = await asUser('/api/reviews/content/movie/123', stranger);
+      check('stranger does NOT see it either', !names(asStranger).includes('priv'));
+
+      const asFollower = await asUser('/api/reviews/content/movie/123', follower);
+      check('an accepted follower does see it', names(asFollower).includes('priv'));
+
+      const asSelf = await asUser('/api/reviews/content/movie/123', priv);
+      check('the author sees their own', names(asSelf).includes('priv'));
+    }
+
+    /* --- 8. and cannot be written to ------------------------------------ */
+
+    section('A private review cannot be liked or replied to');
+    {
+      const privReview = await Rating.findOne({ userId: priv.id }).select('_id').lean();
+      const id = String(privReview?._id);
+
+      const like = await api()
+        .post(`/api/reviews/${id}/like`)
+        .set('Authorization', `Bearer ${stranger.token}`);
+      check('stranger cannot like it → 403', like.status === 403, String(like.status));
+
+      const rep = await api()
+        .post(`/api/reviews/${id}/reply`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .send({ text: 'hello' });
+      check('stranger cannot reply → 403', rep.status === 403, String(rep.status));
+
+      // The write must not have happened before the refusal.
+      const after = await Rating.findById(id).select('likes replies').lean();
+      check('nothing was written despite the 403', (after?.replies?.length ?? 0) === 0 && (after?.likes?.length ?? 0) === 0);
+
+      const okLike = await api()
+        .post(`/api/reviews/${id}/like`)
+        .set('Authorization', `Bearer ${follower.token}`);
+      check('an accepted follower can like it', okLike.status === 200, String(okLike.status));
+    }
+
     console.log(`\n${'─'.repeat(56)}\n${pass} passed, ${fail} failed`);
   } finally {
     await disconnectDb().catch(() => {});
