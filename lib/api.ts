@@ -24,6 +24,26 @@ import { clearSessionCookies, writeSessionCookie } from './sessionCookie';
 
 const BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000').replace(/\/$/, '');
 
+/**
+ * Second line of defence, deliberately not a throw.
+ *
+ * `next.config.mjs` fails the build when this is missing, which is where the
+ * mistake should be caught. But a build can be published from a context that
+ * check did not run in, and this module ships to the browser — throwing here
+ * would replace a broken feature with a blank page for every visitor. So it
+ * says so loudly in the console and carries on: an app calling the wrong host
+ * is bad, an app that renders nothing at all is worse, and only one of the two
+ * leaves a clue in the developer tools.
+ */
+if (!process.env.NEXT_PUBLIC_API_URL && typeof window !== 'undefined') {
+  console.error(
+    'NEXT_PUBLIC_API_URL was not set at build time — falling back to ' +
+      'http://localhost:4000. Every API call from this page will fail unless ' +
+      'you are running the backend locally. Set it in the deployment ' +
+      'environment and rebuild.',
+  );
+}
+
 export const API_BASE = BASE;
 export const TOKEN_KEY = 'velvet.auth.token';
 export const UNAUTHORIZED_EVENT = 'velvet:unauthorized';

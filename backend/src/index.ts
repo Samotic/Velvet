@@ -21,6 +21,45 @@ async function main() {
     process.exit(1);
   }
 
+  /**
+   * FRONTEND_URL, in production, is not optional.
+   *
+   * It falls back to `http://localhost:3000`, which is right for a laptop and
+   * catastrophic on a host: it is both the CORS allow-list and the origin
+   * Socket.io accepts, so a deployment without it boots healthily, passes its
+   * healthcheck, and rejects every request the browser makes. The failure
+   * looks like a frontend bug and is invisible in the API logs, which is
+   * exactly why it is worth dying for.
+   */
+  if (isProd && !process.env.FRONTEND_URL) {
+    console.error(
+      'FATAL: FRONTEND_URL must be set in production.\n' +
+        '  It is the CORS allow-list and the Socket.io origin. Without it the API\n' +
+        '  accepts only http://localhost:3000 and every browser request is blocked.\n' +
+        '  Set it to the deployed frontend origin, with no trailing slash.',
+    );
+    process.exit(1);
+  }
+
+  /**
+   * API_URL, but only when it is actually load-bearing.
+   *
+   * Its single consumer is the Google callback in `services/google.ts`, and
+   * only when `GOOGLE_CALLBACK_URL` has not been given outright. So the guard
+   * is conditional rather than blanket: a deployment with no Google
+   * credentials never reads `apiUrl`, and refusing to boot over a value
+   * nothing consumes would be a worse failure than the one being prevented.
+   */
+  if (isProd && configured.google() && !env.googleCallbackUrl && !process.env.API_URL) {
+    console.error(
+      'FATAL: Google sign-in is configured but neither API_URL nor GOOGLE_CALLBACK_URL is set.\n' +
+        '  The callback would be built against http://localhost:4000 and every Google\n' +
+        '  sign-in would dead-end. Set API_URL to this API public origin, or set\n' +
+        '  GOOGLE_CALLBACK_URL to the exact URI registered in the Google console.',
+    );
+    process.exit(1);
+  }
+
   try {
     await connectDb(env.mongoUri);
   } catch (err) {

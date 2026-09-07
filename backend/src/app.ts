@@ -113,7 +113,32 @@ export function createApp(): Application {
   // Last-resort error handler — keeps the { error } contract even on throws.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    /**
+     * A body the parser could not read is the caller's mistake, not ours.
+     *
+     * `express.json` throws a `SyntaxError` carrying the raw `body`, and
+     * without this it landed here as a 500: the client was told the server had
+     * broken when it had sent malformed JSON, and every occurrence wrote an
+     * `unhandled error` line that looked like an outage. `type` is checked
+     * rather than the class alone, because a genuine SyntaxError thrown from
+     * application code really is a 500.
+     */
+    const parseFailure =
+      err instanceof SyntaxError &&
+      'body' in err &&
+      (err as { type?: string }).type === 'entity.parse.failed';
+
+    if (parseFailure) return fail(res, 'That request body was not valid JSON', 400);
+
+    // Payload too large is likewise the caller's, and has its own status.
+    if ((err as { type?: string })?.type === 'entity.too.large') {
+      return fail(res, 'That request was too large', 413);
+    }
+
     console.error('unhandled error:', err);
+    // The message is deliberately fixed. Whatever `err` says may name a
+    // collection, a query or a file path, and none of that belongs in a
+    // response — the detail goes to the log above instead.
     fail(res, 'Something went wrong', 500);
   });
 
