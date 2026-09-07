@@ -103,6 +103,37 @@ export function stripMimeParams(dataUrl: string): string {
   );
 }
 
+/**
+ * Where message media lives, and the blast radius of a delete.
+ *
+ * These are the folders the two uploaders write to **and** the prefix every
+ * destroy is checked against, deliberately the same constants — a guard that
+ * hardcoded its own copy of the path would stop matching the moment an upload
+ * folder was renamed, and would fail open.
+ */
+export const MESSAGE_IMAGE_FOLDER = 'velvet/messages/images';
+export const MESSAGE_AUDIO_FOLDER = 'velvet/messages/audio';
+const MESSAGE_MEDIA_PREFIX = 'velvet/messages/';
+
+/**
+ * Whether a public id is one this system is allowed to destroy.
+ *
+ * Avatars live at `velvet/avatars/<userId>` and are **deterministic and
+ * shared** — one asset per user, overwritten in place. A parse that wandered
+ * out of the messages tree and handed an avatar id to `destroy` would delete
+ * a live profile photo, and nothing downstream would notice, because a
+ * best-effort deleter swallows its own errors by design.
+ *
+ * So the prefix is checked on both paths, not just the derived one. The stored
+ * id is server-written and trustworthy today, but "trustworthy today" is not
+ * something a destructive call should rest on when the check costs nothing.
+ * `..` is rejected outright rather than resolved: no legitimate id contains it.
+ */
+export function isDestroyableMessageMedia(publicId: string): boolean {
+  if (!publicId.startsWith(MESSAGE_MEDIA_PREFIX)) return false;
+  return !publicId.split('/').includes('..');
+}
+
 /** What an upload gives back. Nulls where the dimension doesn't apply. */
 export interface UploadedMedia {
   url: string;
@@ -140,7 +171,7 @@ export async function uploadMessageImage(dataUrl: string): Promise<UploadedMedia
   // Normalised for the same reason as audio: a parameter on the MIME type is
   // rare from a file input but fatal when it happens.
   const result = await cloudinary.uploader.upload(stripMimeParams(dataUrl), {
-    folder: 'velvet/messages/images',
+    folder: MESSAGE_IMAGE_FOLDER,
     resource_type: 'image',
     transformation: [
       { width: 1600, height: 1600, crop: 'limit' },
@@ -171,7 +202,7 @@ export async function uploadMessageAudio(dataUrl: string): Promise<UploadedMedia
   // MUST be normalised: Cloudinary 400s on the `;codecs=opus` every browser
   // recording carries. See `stripMimeParams`.
   const result = await cloudinary.uploader.upload(stripMimeParams(dataUrl), {
-    folder: 'velvet/messages/audio',
+    folder: MESSAGE_AUDIO_FOLDER,
     resource_type: 'video',
   });
 
@@ -233,8 +264,18 @@ export function derivePublicId(
     // For image and video the format suffix is not part of the id. For raw it
     // is, which is why the strip is conditional rather than unconditional.
     const publicId = resourceType === 'raw' ? joined : joined.replace(/\.[^./]+$/, '');
+    if (!publicId) return null;
 
-    return publicId ? { publicId, resourceType } : null;
+    /**
+     * The parse succeeding is not permission to delete. A URL from anywhere
+     * else on this Cloudinary account — an avatar above all — parses perfectly
+     * well and yields a real, destroyable id. Refusing anything outside the
+     * messages tree is what keeps a fallback parser from reaching an asset it
+     * was never meant to touch.
+     */
+    if (!isDestroyableMessageMedia(publicId)) return null;
+
+    return { publicId, resourceType };
   } catch {
     return null;
   }
@@ -274,6 +315,17 @@ export async function destroyMedia(message: {
       }
       publicId = derived.publicId;
       resourceType = resourceType ?? derived.resourceType;
+    }
+
+    /**
+     * Checked again for the stored path. `derivePublicId` already refuses
+     * anything outside the messages tree, so this only bites when the id came
+     * from the database — but that is exactly the case worth guarding: a
+     * destroy is irreversible, and this is the last point before it happens.
+     */
+    if (!isDestroyableMessageMedia(publicId)) {
+      console.warn(`cloudinary destroy refused: ${publicId} is outside ${MESSAGE_MEDIA_PREFIX}`);
+      return false;
     }
 
     const type = resourceType ?? 'image';

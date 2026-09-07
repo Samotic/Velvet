@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { isValidAudioDataUrl, stripMimeParams } from './cloudinary';
+import {
+  derivePublicId,
+  isDestroyableMessageMedia,
+  isValidAudioDataUrl,
+  stripMimeParams,
+} from './cloudinary';
 
 /**
  * Guards the one bug that got all the way to a user: Cloudinary answers
@@ -62,4 +67,54 @@ test('validation still rejects a non-audio payload', () => {
 test('a stripped recording is still a valid audio data URL', () => {
   const stripped = stripMimeParams('data:audio/webm;codecs=opus;base64,AAAA');
   assert.equal(isValidAudioDataUrl(stripped), true);
+});
+
+/* ------------------------- destroy-target parsing ------------------------- */
+
+/**
+ * The real shape Velvet emits, taken from a live voice note. `video` is the
+ * resource type an audio file lives under — asserting it explicitly because a
+ * derived `image` would make every voice-note delete a silent no-op.
+ */
+test('derives a voice note id, as resource_type video', () => {
+  const url =
+    'https://res.cloudinary.com/nhpamky7/video/upload/v1788706602/velvet/messages/audio/zudvoihmquukriqlqlzi.webm';
+  assert.deepEqual(derivePublicId(url), {
+    publicId: 'velvet/messages/audio/zudvoihmquukriqlqlzi',
+    resourceType: 'video',
+  });
+});
+
+test('derives an image id through a transformation segment', () => {
+  const url =
+    'https://res.cloudinary.com/demo/image/upload/w_1600,h_1600,c_limit/q_auto,f_auto/v1712345678/velvet/messages/images/abc123.jpg';
+  assert.deepEqual(derivePublicId(url), {
+    publicId: 'velvet/messages/images/abc123',
+    resourceType: 'image',
+  });
+});
+
+/**
+ * The guard that matters. An avatar URL parses perfectly well — the refusal
+ * has to be a deliberate prefix check, not a parse failure, which is why this
+ * asserts null rather than merely "not an avatar id".
+ */
+test('refuses an avatar URL, which parses but must never be destroyed', () => {
+  const url =
+    'https://res.cloudinary.com/nhpamky7/image/upload/v1788701442/velvet/avatars/6a9d6aefdec2759dcfc802a9.jpg';
+  assert.equal(derivePublicId(url), null);
+});
+
+test('refuses a TMDB-style host and any non-Cloudinary junk', () => {
+  assert.equal(derivePublicId('https://image.tmdb.org/t/p/w500/poster.jpg'), null);
+  assert.equal(derivePublicId('not a url'), null);
+  assert.equal(derivePublicId(''), null);
+});
+
+test('isDestroyableMessageMedia gates on the messages prefix', () => {
+  assert.equal(isDestroyableMessageMedia('velvet/messages/audio/x'), true);
+  assert.equal(isDestroyableMessageMedia('velvet/messages/images/x'), true);
+  assert.equal(isDestroyableMessageMedia('velvet/avatars/someuser'), false);
+  assert.equal(isDestroyableMessageMedia('velvet/messages/../avatars/x'), false);
+  assert.equal(isDestroyableMessageMedia(''), false);
 });
