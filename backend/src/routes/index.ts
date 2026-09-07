@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 
 import * as activity from '../controllers/activityController';
 import * as ai from '../controllers/aiController';
@@ -10,8 +11,44 @@ import * as ratings from '../controllers/ratingController';
 import * as users from '../controllers/userController';
 import * as watchlist from '../controllers/watchlistController';
 import { optionalAuth, requireAuth, requireVerified } from '../middleware/auth';
+import { isTest } from '../config/env';
 
 import authRoutes from './auth';
+
+/**
+ * A ceiling on model spend from one address.
+ *
+ * The per-account quota (`AI_FREE_DAILY_MESSAGES`, 25) is the real limit and
+ * stays the real limit. It bounds a *user*; it does not bound a *machine*,
+ * because signup is open and free — 200 scripted registrations is 5,000 model
+ * calls a day, and Velvet has no revenue behind that bill.
+ *
+ * Deliberately generous. This exists to make farming accounts from one host
+ * slow and dull, not to police normal use, and the cost of being wrong is
+ * asymmetric: an attacker who hits it simply waits, while a university,
+ * office or mobile carrier NAT that hits it has every one of its users locked
+ * out of a feature with no way to explain why. So the number is set where a
+ * plausible shared network cannot reach it.
+ *
+ * 200/hour, against a per-account limit of 25/day: eight accounts' entire
+ * daily allowance, spent inside a single hour, from a single address. A real
+ * shared network does not do that — it would need eight simultaneous heavy
+ * users all in the same hour — while a scripted farm hits it immediately.
+ *
+ * Residual exposure, stated plainly: one address can still reach ~4,800 calls
+ * a day. This is a brake, not a budget. Watch the spend, and lower this the
+ * moment real traffic shows what normal actually looks like.
+ */
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'The advisor is busy from your network right now. Please try again shortly.',
+  },
+  skip: () => isTest,
+});
 
 /**
  * The API surface, mounted in one place so the whole contract is readable at a
@@ -90,7 +127,9 @@ router.delete('/watchlist/:id', requireAuth, watchlist.remove);
 // is the obvious thing to point a throwaway signup at. `picks` is exempt — it
 // is a TMDB query with no model call behind it, and it renders on the home
 // screen, which an unverified account is explicitly still allowed to browse.
-router.post('/ai/chat', requireAuth, requireVerified, ai.chat);
+// The limiter runs first: a refused request must not reach the model, and
+// must not cost a database read to find that out.
+router.post('/ai/chat', aiLimiter, requireAuth, requireVerified, ai.chat);
 router.get('/ai/history', requireAuth, requireVerified, ai.history);
 router.get('/ai/picks', requireAuth, ai.picks);
 

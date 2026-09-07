@@ -77,6 +77,26 @@ async function consumeQuota(userId: string): Promise<QuotaState> {
   return { allowed: true, remaining: Math.max(0, env.aiFreeDailyMessages - (used + 1)) };
 }
 
+/**
+ * Gives one message back.
+ *
+ * Used when a request consumed its allowance and then turned out not to be a
+ * question — a recording with no intelligible speech in it. The user should
+ * not lose a message to that, but the allowance still has to be taken *first*,
+ * because the model call that discovers the silence has already been paid for
+ * by then.
+ *
+ * Guarded twice in the filter rather than read-modify-write: `$gt: 0` stops it
+ * going negative under concurrent requests, and `isPro` accounts are skipped
+ * because nothing was incremented for them in the first place.
+ */
+async function refundQuota(userId: string): Promise<void> {
+  await User.updateOne(
+    { _id: userId, isPro: { $ne: true }, aiMessagesUsedToday: { $gt: 0 } },
+    { $inc: { aiMessagesUsedToday: -1 } },
+  );
+}
+
 /* ------------------------------- profile --------------------------------- */
 
 /** Assembles everything the system prompt interpolates about this person. */
@@ -166,37 +186,35 @@ export async function chat(req: Request, res: Response): Promise<Response> {
     const userId = req.user!.userId;
 
     /**
-     * A spoken question becomes a written one here, at the edge, and nothing
-     * downstream knows the difference: history, `[[Title]]` extraction, the
-     * follow-up chips and the quota all see an ordinary text turn.
-     *
-     * Transcribed **before** the quota is consumed, so a clip that turns out
-     * to contain no speech costs the user nothing from their daily allowance.
-     * It has already cost a model call, which is why the empty case returns
-     * rather than falling through to a second one.
+     * Everything that can be rejected without spending money is rejected here,
+     * before the allowance is touched. Shape only — no model call.
      */
-    let message: string;
+    const isAudio = body.kind === 'audio';
 
-    if (body.kind === 'audio') {
+    if (isAudio) {
       if (!supportsVoice) return fail(res, 'Voice messages are not available here', 400);
       if (!isValidAudioDataUrl(body.media)) return fail(res, 'That recording is not valid', 422);
-
-      const normalised = stripMimeParams(body.media);
-      const [header, data] = normalised.split(';base64,');
-      const spoken = await transcribe({ data, mimeType: header.replace('data:', '') });
-
-      // Sanitised like any other user text: it is model output about to be
-      // stored and replayed, and the same rules apply to it as to typing.
-      message = clean(spoken, MAX_ADVISOR_MESSAGE);
-      if (!message) return fail(res, "I couldn't hear anything in that recording", 422);
-    } else {
-      message = clean(body.message, MAX_ADVISOR_MESSAGE);
-      if (!message) return fail(res, 'Ask me something first', 422);
+    } else if (!clean(body.message, MAX_ADVISOR_MESSAGE)) {
+      return fail(res, 'Ask me something first', 422);
     }
 
     const profile = await tasteProfile(userId);
     if (!profile) return fail(res, 'User not found', 404);
 
+    /**
+     * The allowance is taken **before** any model call, including the
+     * transcription.
+     *
+     * It used to be taken after, so that a recording with no speech in it cost
+     * the user nothing — which was true, and which also meant the quota
+     * bounded nothing at all for audio. Anyone past their daily limit could
+     * keep posting clips: each one paid for a full transcription and *then*
+     * got a 429. With open signup that is an unbounded bill.
+     *
+     * The nicety it was protecting is kept by refunding below instead. The
+     * ordering is the part that matters: a spend gate that runs after the
+     * spend is not a gate.
+     */
     const quota = await consumeQuota(userId);
     if (!quota.allowed) {
       return fail(
@@ -204,6 +222,31 @@ export async function chat(req: Request, res: Response): Promise<Response> {
         `That's your ${env.aiFreeDailyMessages} advisor messages for today — the count resets tomorrow.`,
         429,
       );
+    }
+
+    /**
+     * A spoken question becomes a written one here, and nothing downstream
+     * knows the difference: history, `[[Title]]` extraction, the follow-up
+     * chips and the stored turn all see ordinary text.
+     */
+    let message: string;
+
+    if (isAudio) {
+      const normalised = stripMimeParams(body.media as string);
+      const [header, data] = normalised.split(';base64,');
+      const spoken = await transcribe({ data, mimeType: header.replace('data:', '') });
+
+      // Sanitised like any other user text: it is model output about to be
+      // stored and replayed, and the same rules apply to it as to typing.
+      message = clean(spoken, MAX_ADVISOR_MESSAGE);
+      if (!message) {
+        // Silence is not a question. The call is already paid for, but the
+        // user should not lose a message to it.
+        await refundQuota(userId);
+        return fail(res, "I couldn't hear anything in that recording", 422);
+      }
+    } else {
+      message = clean(body.message, MAX_ADVISOR_MESSAGE);
     }
 
     // The detail screen's "Ask AI" passes the title in view.

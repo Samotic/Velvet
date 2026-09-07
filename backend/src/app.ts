@@ -31,6 +31,26 @@ export function createApp(): Application {
   const app = express();
 
   /**
+   * Trust exactly one proxy hop.
+   *
+   * Every request on Railway (and Vercel, and Fly, and Heroku) arrives through
+   * the platform's edge, so without this `req.ip` is the *proxy's* address for
+   * every caller alike. Every IP-keyed rate limiter then shares a single
+   * bucket: the auth limiter's 50 attempts per 15 minutes would be 50 for the
+   * entire internet, and the first burst of real traffic would lock everyone
+   * out of signing in. It reads as an outage, not as a limiter working.
+   *
+   * `1`, not `true`. Trusting every hop means trusting the whole
+   * `X-Forwarded-For` chain — which the client writes — so an attacker could
+   * put any address at the front and step around every limit by rotating a
+   * header. One hop trusts the platform edge and nothing beyond it.
+   *
+   * If this ever runs behind a second proxy (a CDN in front of Railway), this
+   * number has to go up to match, or the limiters start keying on the CDN.
+   */
+  app.set('trust proxy', 1);
+
+  /**
    * Security headers.
    *
    * This process serves JSON to a separate origin, never HTML, so most of
