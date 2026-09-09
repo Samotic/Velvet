@@ -1,10 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Copy, Pencil, Trash } from '@/components/icons';
 import { canDeleteForEveryone, canEdit, type DeleteScope } from '@/lib/messages';
 import type { ThreadMessage } from '@/lib/messageGroups';
+
+import { MenuSurface } from './MenuSurface';
 
 /**
  * The per-message action menu, and the confirm step behind Delete.
@@ -12,7 +14,8 @@ import type { ThreadMessage } from '@/lib/messageGroups';
  * Two surfaces, one component, because they are one decision the user is
  * making. On a pointer device the menu is a small popover anchored to the
  * bubble; on touch it is a bottom sheet, which is where a thumb already is and
- * where the platform convention puts a long-press result.
+ * where the platform convention puts a long-press result. `MenuSurface` owns
+ * that part — this file owns only what the menu offers.
  *
  * Delete always opens a second step. It is the only destructive action here
  * and the only one whose two outcomes differ in who they affect, so it is
@@ -21,10 +24,7 @@ import type { ThreadMessage } from '@/lib/messageGroups';
  * regrets it.
  */
 
-/** Below this the menu is a sheet, above it a popover. Matches `--bp-chat`. */
-const TOUCH_QUERY = '(max-width: 720px), (pointer: coarse)';
-
-type Stage = 'closed' | 'menu' | 'confirm';
+type Stage = 'menu' | 'confirm';
 
 export function MessageMenu({
   message,
@@ -43,58 +43,6 @@ export function MessageMenu({
   onClose: () => void;
 }) {
   const [stage, setStage] = useState<Stage>('menu');
-  const [sheet, setSheet] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [clamped, setClamped] = useState<{ x: number; y: number } | null>(anchor);
-
-  /**
-   * Keeps the popover on screen.
-   *
-   * A right-click near the right or bottom edge — which is exactly where an
-   * outgoing bubble sits — would otherwise open a menu running off the
-   * viewport with no way to reach its items. Measured after mount because the
-   * height depends on which items this particular message offers.
-   */
-  useLayoutEffect(() => {
-    if (sheet || !anchor) return;
-    const el = rootRef.current;
-    if (!el) return;
-
-    const { width, height } = el.getBoundingClientRect();
-    const pad = 8;
-    setClamped({
-      x: Math.max(pad, Math.min(anchor.x, window.innerWidth - width - pad)),
-      y: Math.max(pad, Math.min(anchor.y, window.innerHeight - height - pad)),
-    });
-  }, [anchor, sheet, stage]);
-
-  useEffect(() => {
-    const mq = window.matchMedia(TOUCH_QUERY);
-    const sync = () => setSheet(mq.matches);
-    sync();
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  }, []);
-
-  // Escape closes whichever step is showing, and an outside click does the
-  // same — a menu that survives a click elsewhere reads as stuck.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    // Deferred a frame: the same click that opened this would otherwise close
-    // it immediately, since it is still travelling up to the document.
-    const t = window.setTimeout(() => document.addEventListener('mousedown', onDown), 0);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.removeEventListener('mousedown', onDown);
-      window.clearTimeout(t);
-    };
-  }, [onClose]);
 
   const copy = useCallback(() => {
     void navigator.clipboard?.writeText(message.text).catch(() => {});
@@ -112,16 +60,8 @@ export function MessageMenu({
    */
   const gone = message.deletedForEveryone;
 
-  const body = (
-    <div
-      ref={rootRef}
-      className={sheet ? 'msg-sheet' : 'msg-menu'}
-      style={
-        sheet || !clamped ? undefined : { left: `${clamped.x}px`, top: `${clamped.y}px` }
-      }
-      role="menu"
-      aria-label="Message actions"
-    >
+  return (
+    <MenuSurface anchor={anchor} label="Message actions" onClose={onClose}>
       {stage === 'menu' && !gone && (
         <>
           {mayEdit && (
@@ -165,18 +105,7 @@ export function MessageMenu({
           </button>
         </>
       )}
-    </div>
-  );
-
-  if (!sheet) return body;
-
-  // The scrim belongs to the sheet only. On a pointer device the popover is
-  // small and dismissing by clicking away is enough; dimming the thread there
-  // would be a heavier gesture than the action warrants.
-  return (
-    <div className="msg-sheet-scrim" onClick={onClose} role="presentation">
-      <div onClick={(e) => e.stopPropagation()}>{body}</div>
-    </div>
+    </MenuSurface>
   );
 }
 

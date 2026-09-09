@@ -189,3 +189,26 @@ export type DeleteScope = 'me' | 'everyone';
 export function deleteMessage(messageId: string, scope: DeleteScope): Promise<void> {
   return api.del(`/api/messages/${messageId}`, { body: { scope } }).then(() => undefined);
 }
+
+/** What a conversation-level clear reports back. */
+export interface ClearResult {
+  cleared: DeleteScope;
+  /** Messages actually retracted. Always 0 for scope 'me'. */
+  retracted: number;
+  /** Mine that were past the window, so the UI can say so rather than
+   *  appearing to have done less than it was asked. */
+  skippedTooOld: number;
+}
+
+/**
+ * Clears a whole conversation.
+ *
+ * A bulk application of the per-message rules, not a second kind of deletion.
+ * `me` hides every message from this viewer and leaves the other copy alone;
+ * `everyone` retracts **only my own** messages, and only those still inside
+ * the delete window — so it does not empty the thread, which is why the UI
+ * calls it "Delete my recent messages" rather than "clear for everyone".
+ */
+export function clearConversation(userId: string, scope: DeleteScope): Promise<ClearResult> {
+  return api.del<ClearResult>(`/api/messages/${userId}/history`, { body: { scope } });
+}

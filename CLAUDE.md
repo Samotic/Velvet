@@ -469,6 +469,65 @@ before a byte reaches Cloudinary.
   http outside localhost. The composer hides the mic where it cannot work
   rather than offering a dead button.
 
+### Deleting, and clearing
+
+Deletion has exactly **two** outcomes, and everything else is a bulk
+application of them — never a third rule:
+
+- **for me** sets `deletedFor[]`, per viewer. The other copy is untouched and
+  the other person is told nothing.
+- **for everyone** tombstones: `deletedForEveryone`, content fields cleared,
+  the document kept so counters and cached lists stay coherent. Sender only,
+  and only inside `DELETE_WINDOW_MS` (48h).
+
+`DELETE /api/messages/:userId/history` applies those two to a whole
+conversation. It reuses the same predicates, the same window and the same
+`recomputePreview` / `releaseThreadUnread` / `retractMessage` helpers — there is
+no second implementation of "what deletion means", and adding one is how the two
+paths start disagreeing about what a thread looks like afterwards.
+
+- **The second scope is called "Delete my recent messages", not "clear for
+  everyone".** It retracts only what *I* sent, inside the window, so it
+  routinely leaves most of the thread standing. A label promising an empty
+  conversation and delivering a thinned one is a broken promise discovered
+  *after* the irreversible step, and no explanatory copy underneath rescues it.
+  The name states the outcome; the note states the limits.
+- **The response carries `{ cleared, retracted, skippedTooOld }` and the UI says
+  so** — "12 messages deleted, 3 too old". A silent partial reads as a bug, or
+  worse, as older messages having gone when they have not.
+- **Clear-for-me leaves Cloudinary alone.** The other person still has the
+  message, so the asset is still in use. Clear-for-everyone destroys the media,
+  throttled at concurrency 4 *after* the response — a stranded asset is a
+  sweep-up job, a clear that 500s because Cloudinary was slow is a thread the
+  user was told they could not tidy.
+- **The notification card is retracted once, not once per message**, because
+  message notifications dedupe to one card per sender.
+- Every socket event through `emitEach` carries **`withUserId`**, the other
+  participant from that recipient's point of view. The per-message events can
+  reconcile by `messageId` and ignore it; a clear has no message id, and the
+  open thread is keyed by the other person rather than by `conversationId`.
+- **The thread reloads rather than patching** after a clear. A bulk change is
+  the one case where replaying it into local state means re-deriving, on the
+  client, exactly the rules the server has just finished applying.
+
+**Known limit — the inbox reads the newest 200 conversations.** `conversations`
+sorts in Mongo on the shared `lastMessageAt`, then **re-sorts in JS** on the
+per-viewer `lastFor` time, because a Map field cannot be indexed for a sort and
+every row displays the per-viewer value. Clearing makes the gap between the two
+visible, which is why the re-sort exists. The `.limit(200)` is still on the
+shared field: in principle a viewer with more than 200 threads could have one
+whose per-viewer time would have placed it on screen dropped before the re-sort
+runs. It is a **safe upper bound, not a correctness hole**: reaching it needs
+more than 200 conversations *and* enough clearing that a thread's per-viewer
+time outranks 200 shared ones, and the failure is a row ordered late or missing
+from an already-overfull list — never wrong content, a wrong preview or a wrong
+unread count, all of which are computed per viewer. Fixing it means storing a
+sortable per-viewer timestamp, which is a schema change with no user behind it
+yet. Do not rediscover this as a bug.
+
+`npm run verify:clear` covers both scopes against a real database — including a
+message backdated past the window, which cannot be created over the API.
+
 ## Conventions
 
 - Server components by default; `'use client'` where state, storage or the

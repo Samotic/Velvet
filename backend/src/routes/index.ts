@@ -149,6 +149,14 @@ router.put('/messages/:userId/read', requireAuth, requireVerified, messages.mark
  * No conflict with `/messages/:userId` above: that one is a GET, and these two
  * are the only PATCH and DELETE on the path.
  */
+// Two segments, so no collision with the one-segment DELETE below.
+router.delete(
+  '/messages/:userId/history',
+  requireAuth,
+  requireVerified,
+  messages.clearHistory,
+);
+
 router.patch('/messages/:messageId', requireAuth, requireVerified, messages.edit);
 router.delete('/messages/:messageId', requireAuth, requireVerified, messages.remove);
 

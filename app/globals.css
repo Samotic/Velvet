@@ -6131,6 +6131,38 @@ input[type='range']::-moz-range-thumb {
   font-size: 13px;
   color: var(--chat-text-muted);
 }
+/*
+   The explanatory line under a confirm title.
+
+   Only the conversation-level menu uses it, and it is not decoration: those
+   two actions differ in who they affect and in how much they actually remove,
+   and neither difference is legible from a button label alone. Capped in width
+   because the popover is otherwise sized by its widest item, and a paragraph
+   would stretch it across the thread.
+*/
+.msg-sheet-note {
+  margin: 0;
+  padding: 0 14px 10px;
+  max-width: 272px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--chat-text-muted);
+}
+.msg-sheet-note strong {
+  color: var(--chat-text);
+  font-weight: 500;
+}
+/* A clear already in flight. Frozen rather than hidden, so the sheet does not
+   reflow under a thumb that is still on it. */
+.msg-menu button:disabled,
+.msg-sheet button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.msg-menu button:disabled:hover,
+.msg-sheet button:disabled:hover {
+  background: transparent;
+}
 .msg-sheet-cancel {
   margin-top: 4px;
   justify-content: center;

@@ -37,6 +37,16 @@ export interface PreviewRow {
   preview: string;
   previewAt: string | null;
   previewFromMe: boolean;
+  /**
+   * The other participant, from **this** recipient's point of view.
+   *
+   * These events are addressed to a person rather than broadcast to a room, so
+   * each side has to work out which of its threads the event belongs to. The
+   * per-message events can reconcile by `messageId` and ignore this; a
+   * conversation-level clear has no message id, and the open thread is keyed by
+   * the other person's id rather than by `conversationId`.
+   */
+  withUserId: string;
 }
 
 /** Server → client events. Kept in one place so handlers can't drift. */
@@ -78,6 +88,24 @@ export interface ServerEvents {
    */
   'message:deletedForMe': (
     payload: PreviewRow & { messageId: string; conversationId: string },
+  ) => void;
+  /**
+   * A whole conversation was cleared.
+   *
+   * Sent to the actor always, and to the other participant only when the scope
+   * was 'everyone' — a clear for me is per-viewer and must tell them nothing,
+   * exactly like a single delete-for-me.
+   *
+   * Carries the scope rather than a message list: the thread reloads from the
+   * server, because a bulk change is the one case where replaying individual
+   * edits into local state is more fragile than simply asking again.
+   */
+  'message:cleared': (
+    payload: PreviewRow & {
+      conversationId: string;
+      scope: 'me' | 'everyone';
+      deletedAt?: string;
+    },
   ) => void;
   /** The relay identifies the typist by id only — it has no conversation id. */
   'typing:start': (payload: { userId: string }) => void;

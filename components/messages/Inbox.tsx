@@ -68,6 +68,18 @@ export function Inbox({ activeUserId }: { activeUserId?: string }) {
     };
   }, []);
 
+  /**
+   * A conversation-level clear refetches instead of patching.
+   *
+   * The exception to the rule above, and for a reason the other three don't
+   * have: clearing moves the **unread count** as well as the preview — to zero
+   * for me, and down by however many of my messages were still unread for
+   * them — and the payload carries only a preview. Patching would leave a dot
+   * on a row whose messages are all gone. It is also a rare, deliberate action,
+   * so one extra request costs nothing worth saving.
+   */
+  useEffect(() => onSocket('message:cleared', () => load()), [load]);
+
   const filtered = (items ?? []).filter((c) => {
     const term = q.trim().toLowerCase();
     if (!term) return true;

@@ -141,6 +141,31 @@ export async function conversations(req: Request, res: Response): Promise<Respon
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
 
+    /**
+     * Re-ordered on the value the row actually shows.
+     *
+     * The Mongo sort above is on the **shared** `lastMessageAt`, because a Map
+     * field cannot be indexed for a sort — but every row displays the
+     * **per-viewer** time. Left alone, the two disagree: a thread whose newest
+     * messages this viewer has hidden keeps its position near the top while
+     * showing something much older, and the client (which re-sorts on the
+     * displayed value after any live event) would move it and then a reload
+     * would move it back.
+     *
+     * Clearing a whole conversation is the case that makes this impossible to
+     * ignore: the per-viewer time becomes null while the shared one stays
+     * current, so an empty row would sit above threads with real activity.
+     *
+     * Sorting here rather than in the query is cheap — at most 200 rows,
+     * already materialised. Rows with no visible message sort last rather than
+     * first, which is what `-Infinity` buys.
+     */
+    out.sort((a, b) => {
+      const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : -Infinity;
+      const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : -Infinity;
+      return bt - at;
+    });
+
     return ok(res, { conversations: out });
   } catch (err) {
     console.error('conversations error:', err);
@@ -452,6 +477,17 @@ function emitEach(
     const mine = previews[p];
     emitToUser(p, event, {
       ...payload,
+      /**
+       * The *other* participant, from this recipient's point of view.
+       *
+       * Every one of these events is addressed to a person, not to a room, so
+       * the recipient has to work out which of their threads it belongs to.
+       * The per-message events can reconcile by `messageId` and ignore this; a
+       * conversation-level clear carries no message id and has nothing else to
+       * match on — the open thread is keyed by the other person's id, not by
+       * `conversationId`.
+       */
+      withUserId: participants.find((x) => x !== p) ?? p,
       preview: mine?.text ?? '',
       previewAt: mine?.at ?? null,
       previewFromMe: String(mine?.senderId ?? '') === p,
@@ -668,5 +704,200 @@ export async function remove(req: Request, res: Response): Promise<Response> {
   } catch (err) {
     console.error('delete message error:', err);
     return fail(res, 'Could not delete that message', 500);
+  }
+}
+
+/* ------------------------- clearing a conversation ------------------------ */
+
+/**
+ * How many Cloudinary destroys run at once when a clear retracts media.
+ *
+ * Clearing a long thread can name dozens of assets. Firing them all at once
+ * would be a burst against a rate-limited third party for work nobody is
+ * waiting on — this is already off the response path, so it can afford to be
+ * unhurried.
+ */
+const DESTROY_CONCURRENCY = 4;
+
+/** Runs `work` over `items`, `limit` at a time. Never throws. */
+async function inBatches<T>(
+  items: T[],
+  limit: number,
+  work: (item: T) => Promise<unknown>,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += limit) {
+    await Promise.all(items.slice(i, i + limit).map((item) => work(item).catch(() => {})));
+  }
+}
+
+/**
+ * DELETE /api/messages/:userId/history — clear a whole conversation.
+ *
+ * A bulk application of the per-message rules, not a second deletion model.
+ * `scope: 'me'` is delete-for-me applied to every message; `scope: 'everyone'`
+ * is delete-for-everyone applied to every message of mine that is still
+ * eligible. The same `deletedFor` / `deletedForEveryone` fields carry it, so a
+ * cleared thread and a thread cleared one message at a time are identical in
+ * the database.
+ *
+ * Which is also why "everyone" does **not** empty the thread: it can only
+ * reach my own messages, inside `DELETE_WINDOW_MS`, exactly as the per-message
+ * route can. Their messages stay, and so do mine older than the window. The
+ * response returns the counts so the UI can say which, rather than appearing
+ * to do less than it was asked.
+ */
+export async function clearHistory(req: Request, res: Response): Promise<Response> {
+  try {
+    const otherId = req.params.userId;
+    if (!isObjectId(otherId)) return fail(res, 'User not found', 404);
+
+    const raw = (req.body as { scope?: unknown } | undefined)?.scope ?? req.query.scope;
+    const scope = typeof raw === 'string' ? raw : '';
+    if (scope !== 'me' && scope !== 'everyone') {
+      return fail(res, "Clearing needs scope: 'me' or 'everyone'", 400);
+    }
+
+    const me = req.user!.userId;
+
+    const convo = await Conversation.findOne({
+      participants: [me, otherId].sort().map((id) => new Types.ObjectId(id)),
+    }).select('_id');
+
+    // No thread is not an error: the caller wanted it empty, and it is.
+    if (!convo) return ok(res, { cleared: scope, retracted: 0, skippedTooOld: 0 });
+
+    const participants = [me, otherId];
+
+    /* --- mine only, for me ------------------------------------------------ */
+
+    if (scope === 'me') {
+      /**
+       * One write for the whole thread. `$addToSet` makes it idempotent, so
+       * clearing twice is not an error and messages already hidden one at a
+       * time are simply left as they are.
+       *
+       * Note this hides **their** messages from me as well as my own — that is
+       * what clearing a history means, and it is per-viewer, so their copy is
+       * untouched. New messages carry an empty `deletedFor` and appear
+       * normally, which needs no work here.
+       */
+      await Message.updateMany(
+        { conversationId: convo._id, deletedFor: { $ne: new Types.ObjectId(me) } },
+        { $addToSet: { deletedFor: new Types.ObjectId(me) } },
+      );
+
+      // Everything is hidden, so nothing of mine is unread. Set rather than
+      // decremented: the count is now knowably zero.
+      await Conversation.updateOne({ _id: convo._id }, { $set: { [`unread.${me}`]: 0 } });
+
+      const previews = await recomputePreview(convo._id, [me]);
+      emitEach([me], 'message:cleared', previews, {
+        conversationId: String(convo._id),
+        scope: 'me',
+      });
+
+      return ok(res, { cleared: 'me', retracted: 0, skippedTooOld: 0 });
+    }
+
+    /* --- mine only, for everyone ------------------------------------------ */
+
+    const cutoff = new Date(Date.now() - DELETE_WINDOW_MS);
+
+    /**
+     * Read before writing, for two reasons: the media URLs are about to be
+     * cleared and cannot be recovered afterwards, and the unread flags decide
+     * how far the recipient's counter falls.
+     */
+    const mine = await Message.find({
+      conversationId: convo._id,
+      senderId: me,
+      deletedForEveryone: { $ne: true },
+    })
+      .select('_id read createdAt mediaUrl mediaPublicId mediaResourceType')
+      .lean();
+
+    const eligible = mine.filter((m) => m.createdAt >= cutoff);
+    const skippedTooOld = mine.length - eligible.length;
+
+    if (!eligible.length) {
+      return ok(res, { cleared: 'everyone', retracted: 0, skippedTooOld });
+    }
+
+    const deletedAt = new Date();
+    const ids = eligible.map((m) => m._id);
+
+    // One write. The same fields the per-message path clears, for the same
+    // reason: the document survives so counters and cached lists stay
+    // coherent, the content does not.
+    await Message.updateMany(
+      { _id: { $in: ids } },
+      {
+        $set: {
+          deletedForEveryone: true,
+          deletedAt,
+          deletedBy: new Types.ObjectId(me),
+          text: '',
+          mediaUrl: null,
+          mediaPublicId: null,
+          mediaResourceType: null,
+          editHistory: [],
+        },
+      },
+    );
+
+    /**
+     * Their unread counter, once per message that was unread.
+     *
+     * `releaseThreadUnread` is guarded at zero, so a miscount cannot drive it
+     * negative — but the number of calls still has to match the number of
+     * messages that were actually counting.
+     */
+    const unreadCount = eligible.filter((m) => !m.read).length;
+    for (let i = 0; i < unreadCount; i += 1) {
+      await releaseThreadUnread(convo._id, otherId, true);
+    }
+
+    /**
+     * The notification card, once — not once per message.
+     *
+     * Message notifications now dedupe to one card per sender, so the first
+     * retraction removes it and the other forty would be no-ops against a row
+     * that is already gone.
+     */
+    await retractMessage({
+      _id: eligible[0]._id as Types.ObjectId,
+      conversationId: convo._id,
+      receiverId: new Types.ObjectId(otherId),
+      // The unread counter was released above, per message; this call must not
+      // release a second one.
+      wasUnread: false,
+    });
+
+    const previews = await recomputePreview(convo._id, participants);
+    emitEach(participants, 'message:cleared', previews, {
+      conversationId: String(convo._id),
+      scope: 'everyone',
+      deletedAt,
+    });
+
+    const response = ok(res, {
+      cleared: 'everyone',
+      retracted: eligible.length,
+      skippedTooOld,
+    });
+
+    // After the response, throttled. A stranded asset is a sweep-up job; a
+    // clear that 500s because Cloudinary was slow is a thread the user was
+    // told they could not tidy.
+    void inBatches(
+      eligible.filter((m) => m.mediaUrl || m.mediaPublicId),
+      DESTROY_CONCURRENCY,
+      (m) => destroyMedia(m),
+    );
+
+    return response;
+  } catch (err) {
+    console.error('clear history error:', err);
+    return fail(res, 'Could not clear that conversation', 500);
   }
 }

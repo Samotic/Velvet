@@ -5,14 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@/components/auth/AuthProvider';
 import { useToast } from '@/components/Toast';
-import { ArrowLeft } from '@/components/icons';
+import { ArrowLeft, MoreHorizontal } from '@/components/icons';
 import { Avatar } from '@/components/ui/Avatar';
 import { ApiError, api } from '@/lib/api';
 import type { PublicProfile } from '@/lib/authTypes';
 import { applyDeleted, applyDeletedForMe, applyEdited } from '@/lib/messageEvents';
 import { type ThreadMessage, groupMessages } from '@/lib/messageGroups';
 import {
+  DELETE_WINDOW_MS,
   type DeleteScope,
+  clearConversation,
   deleteMessage,
   editMessage,
   getThread,
@@ -26,6 +28,7 @@ import { emitSocket, onSocket } from '@/lib/socket';
 import { Composer } from './Composer';
 import { MessageGroup } from './MessageGroup';
 import { MessageMenu } from './MessageMenu';
+import { ThreadMenu } from './ThreadMenu';
 import { useRecorder } from './useRecorder';
 
 /** Matches the `.msg-row.collapsing` transition in globals.css. */
@@ -82,6 +85,10 @@ export function Thread({ userId }: { userId: string }) {
   const [menu, setMenu] = useState<{ m: ThreadMessage; at: { x: number; y: number } } | null>(
     null,
   );
+  /** The header ⋯ menu, and where it was opened from. */
+  const [threadMenu, setThreadMenu] = useState<{ x: number; y: number } | null>(null);
+  /** A conversation-level clear in flight, so the confirm cannot be double-tapped. */
+  const [clearing, setClearing] = useState(false);
   /** The message being reworded, plus the draft that was displaced to do it. */
   const [editing, setEditing] = useState<{ id: string; before: string } | null>(null);
   /** Ids still on screen while their removal animates. */
@@ -126,6 +133,29 @@ export function Thread({ userId }: { userId: string }) {
       });
 
     return () => controller.abort();
+  }, [userId]);
+
+  /**
+   * Refetches the thread without blanking it first.
+   *
+   * Used after a conversation-level clear, which is the one change too broad to
+   * replay into local state: "everything I can see is now hidden" is not a list
+   * of edits, and a bulk change applied optimistically has to guess at exactly
+   * the rules — sender, window, tombstone-or-remove — that the server has just
+   * finished applying for real. Asking again is both shorter and correct.
+   *
+   * No skeleton, deliberately: the messages on screen are stale for one round
+   * trip, which is a better frame than an empty thread that may be about to
+   * refill.
+   */
+  const reload = useCallback(() => {
+    getThread(userId)
+      .then(({ messages: list, canMessage: allowed, readReceipts }) => {
+        setMessages(list);
+        setCanMessage(allowed);
+        setReceipts(readReceipts);
+      })
+      .catch(() => {});
   }, [userId]);
 
   /**
@@ -229,6 +259,19 @@ export function Thread({ userId }: { userId: string }) {
     });
 
     /**
+     * A whole conversation was cleared — by me on another device, or by them
+     * retracting their recent half.
+     *
+     * `withUserId` is the only way to tell whether this thread is the one
+     * affected: unlike every event above it there is no message id to match,
+     * and the component is addressed by person rather than by conversation.
+     */
+    const offCleared = onSocket('message:cleared', (p) => {
+      if (p.withUserId !== userId) return;
+      reload();
+    });
+
+    /**
      * They opened the thread. Marks everything I sent as read.
      *
      * Applied to the whole thread rather than a message list, because that is
@@ -258,10 +301,15 @@ export function Thread({ userId }: { userId: string }) {
       offEdited();
       offDeleted();
       offDeletedForMe();
+      offCleared();
+      // Was missing: without it every thread visited in a session left a live
+      // `message:read` listener behind, and each one setState'd against a tree
+      // that had moved on.
+      offRead();
       offStart();
       offStop();
     };
-  }, [userId]);
+  }, [userId, collapseThenRemove, reload]);
 
   /* --- scroll ----------------------------------------------------------- */
 
@@ -412,6 +460,57 @@ export function Thread({ userId }: { userId: string }) {
       }
     },
     [messages, collapseThenRemove, cancelCollapse, toast],
+  );
+
+  /**
+   * Clears the whole conversation, one way or the other.
+   *
+   * Not optimistic, unlike every other write on this screen. A single delete
+   * can be rolled back from a snapshot because it is one row; a clear touches
+   * an unknown number of them under rules — sender, window, tombstone or
+   * removal — that only the server has fully applied. Guessing at the outcome
+   * and then correcting it would flash a wrong thread at exactly the moment
+   * the user is watching to see what their irreversible action did.
+   *
+   * The counts are reported rather than swallowed. "Delete my recent messages"
+   * routinely leaves some behind, and a silent partial looks like a bug or, far
+   * worse, like the older ones were deleted when they were not.
+   */
+  const clearAll = useCallback(
+    async (scope: DeleteScope) => {
+      if (clearing) return;
+      setClearing(true);
+      try {
+        const { retracted, skippedTooOld } = await clearConversation(userId, scope);
+        setThreadMenu(null);
+        // The socket echo will reload this tab too, but not reliably first and
+        // not at all when the connection is down.
+        reload();
+        setEditing(null);
+
+        if (scope === 'me') {
+          toast.ok('Chat cleared for you');
+        } else if (retracted === 0) {
+          toast.ok(
+            skippedTooOld > 0
+              ? `Nothing deleted — your ${skippedTooOld === 1 ? 'message is' : `${skippedTooOld} messages are`} past the ${Math.round(DELETE_WINDOW_MS / 3_600_000)}-hour window`
+              : 'You had nothing to delete here',
+          );
+        } else {
+          const deleted = `${retracted} ${retracted === 1 ? 'message' : 'messages'} deleted`;
+          toast.ok(
+            skippedTooOld > 0
+              ? `${deleted}, ${skippedTooOld} too old`
+              : deleted,
+          );
+        }
+      } catch (err) {
+        toast.bad(err instanceof ApiError ? err.message : "Couldn't clear this chat");
+      } finally {
+        setClearing(false);
+      }
+    },
+    [clearing, userId, reload, toast],
   );
 
   /* --- sending ---------------------------------------------------------- */
@@ -639,6 +738,25 @@ export function Thread({ userId }: { userId: string }) {
             {following ? 'Following' : 'Follow'}
           </button>
         )}
+
+        {/*
+          Anchored to the button rather than the pointer: unlike a bubble's
+          menu this one has a fixed home in the chrome, and opening it under
+          the cursor would put it in a different place each time.
+        */}
+        <button
+          type="button"
+          className="chat-icon"
+          aria-label="Conversation actions"
+          aria-haspopup="menu"
+          aria-expanded={threadMenu !== null}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setThreadMenu((cur) => (cur ? null : { x: r.right - 200, y: r.bottom + 6 }));
+          }}
+        >
+          <MoreHorizontal />
+        </button>
       </div>
 
       <div className="thread-log" ref={logRef} onScroll={onScroll}>
@@ -728,6 +846,16 @@ export function Thread({ userId }: { userId: string }) {
           onEdit={() => startEdit(menu.m)}
           onDelete={(scope) => void removeMessage(menu.m, scope)}
           onClose={() => setMenu(null)}
+        />
+      )}
+
+      {threadMenu && (
+        <ThreadMenu
+          otherName={other?.displayName}
+          anchor={threadMenu}
+          busy={clearing}
+          onClear={(scope) => void clearAll(scope)}
+          onClose={() => setThreadMenu(null)}
         />
       )}
     </div>
