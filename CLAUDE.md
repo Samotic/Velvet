@@ -576,12 +576,21 @@ resolves to Gemini rather than silently falling back to the retired provider.
   answered against the training cutoff with nothing in the reply to say so. An
   unrecognised zone falls back to UTC rather than throwing.
 - **A spoken question becomes text at the edge.** `POST /api/ai/chat` accepts
-  `{ kind: 'audio', media }` and transcribes it via `provider.transcribe`
-  before anything else runs, so history replay, `[[Title]]` extraction, the
-  follow-up chips and the quota all see an ordinary text turn. Transcription
-  happens **before** the quota is consumed, so a clip with no speech in it
-  costs the user nothing. `transcribe` is optional on `AIProvider` — Anthropic
-  has no audio input and omits it, and `supportsVoice` is what lets the UI hide
-  the microphone instead of offering a button that can only fail.
+  `{ kind: 'audio', media }` and transcribes it via `provider.transcribe`, so
+  history replay, `[[Title]]` extraction, the follow-up chips and the stored
+  turn all see an ordinary text turn. `transcribe` is optional on `AIProvider` —
+  Anthropic has no audio input and omits it, and `supportsVoice` is what lets
+  the UI hide the microphone instead of offering a button that can only fail.
+- **The allowance is taken before any model call, and refunded on failure.**
+  It used to be taken *after* transcription, so a clip with no speech cost the
+  user nothing — true, and it also meant the quota bounded nothing at all for
+  audio: anyone past their daily limit could keep posting clips, each paying
+  for a full transcription and *then* getting a 429. With open signup that is
+  an unbounded bill. A spend gate that runs after the spend is not a gate.
+  The nicety is preserved by refunding instead, and the refund covers **every**
+  failure past the point of charging — transcription throwing or timing out,
+  Gemini unreachable, a safety refusal, the write failing — not just the silent
+  clip, because a Gemini outage must not quietly cost every user a message per
+  attempt. `verify:quota` holds that line.
 - **`/api/ai/picks` is not a model call** and never should be — it renders on
   every home view. It is TMDB discover filtered by the user's genres.
