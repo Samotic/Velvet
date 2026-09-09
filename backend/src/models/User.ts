@@ -74,6 +74,19 @@ export interface IUser {
   /** Controls content visibility, independently of follow approval. */
   profileVisibility: ProfileVisibility;
   /**
+   * Whether this account takes part in read receipts.
+   *
+   * **Mutual, not one-way.** Turning it off stops you sending receipts *and*
+   * stops you seeing anyone else's — the WhatsApp and Instagram rule. A
+   * setting that hid your own ticks while still showing you everyone else's is
+   * a one-way mirror, and people notice.
+   *
+   * Enforced in `markRead` and in the thread read, never in the client: a
+   * browser that chooses not to display a receipt is not the same thing as a
+   * server that never sent one.
+   */
+  readReceipts: boolean;
+  /**
    * Denormalized counts, maintained by `$inc` alongside every edge write.
    *
    * `countDocuments()` on render is the obvious alternative and it is wrong:
@@ -201,6 +214,8 @@ const userSchema = new Schema<IUser>(
       default: [],
     },
     profileVisibility: { type: String, enum: PROFILE_VISIBILITIES, default: 'public' },
+    /** Default on: the feature is only meaningful if most people are in it. */
+    readReceipts: { type: Boolean, default: true },
     followerCount: { type: Number, default: 0, min: 0 },
     followingCount: { type: Number, default: 0, min: 0 },
     pendingRequestCount: { type: Number, default: 0, min: 0 },

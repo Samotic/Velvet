@@ -20,7 +20,8 @@
     "verify:messages": "tsx scripts/verify-message-edit-delete.ts",
     "verify:privacy": "tsx scripts/verify-privacy.ts",
     "verify:quota": "tsx scripts/verify-ai-quota.ts",
-    "verify:revocation": "tsx scripts/verify-revocation.ts"
+    "verify:revocation": "tsx scripts/verify-revocation.ts",
+    "verify:receipts": "tsx scripts/verify-read-receipts.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

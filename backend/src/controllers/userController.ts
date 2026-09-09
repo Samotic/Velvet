@@ -117,6 +117,23 @@ export async function updateMe(req: Request, res: Response): Promise<Response> {
       patch.profileVisibility = body.profileVisibility;
     }
 
+    /**
+     * Read receipts. Mutual — see the note on the model.
+     *
+     * Nothing retroactive happens at either edge. Turning it off cannot unsend
+     * a receipt already delivered, and turning it on does not disclose reads
+     * that happened while it was off *as they happened* — the stored `read`
+     * flag is released to the sender only when the pair is opted in at the
+     * moment of the request, so the disclosure follows the current setting
+     * rather than the setting at the time of reading.
+     */
+    if (body.readReceipts !== undefined) {
+      if (typeof body.readReceipts !== 'boolean') {
+        return fail(res, 'Read receipts must be true or false', 422);
+      }
+      patch.readReceipts = body.readReceipts;
+    }
+
     if (Array.isArray(body.pinnedFilms)) {
       const pins = body.pinnedFilms
         .filter((p): p is Record<string, unknown> => typeof p === 'object' && p !== null)

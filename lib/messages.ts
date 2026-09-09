@@ -43,14 +43,24 @@ export function getConversations(signal?: AbortSignal): Promise<Conversation[]> 
  * `canMessage` is the mutual-follow verdict, computed server-side. History is
  * always returned — losing the follow closes the composer, not the thread.
  */
-export function getThread(
-  userId: string,
-  signal?: AbortSignal,
-): Promise<{ messages: DirectMessage[]; user: PublicProfile; canMessage: boolean }> {
-  return api.get<{ messages: DirectMessage[]; user: PublicProfile; canMessage: boolean }>(
-    `/api/messages/${userId}`,
-    { signal },
-  );
+export interface ThreadPayload {
+  messages: DirectMessage[];
+  user: PublicProfile;
+  canMessage: boolean;
+  /**
+   * Whether read receipts are live for **this pair** — both sides opted in.
+   *
+   * Decided server-side, and the server also withholds `read` on your own
+   * messages when it is false, so this is not the thing keeping the secret.
+   * It exists so the client can render *nothing* rather than a greyed-out
+   * tick: an indicator that is visibly disabled still tells you the other
+   * person has receipts off, which is its own disclosure.
+   */
+  readReceipts: boolean;
+}
+
+export function getThread(userId: string, signal?: AbortSignal): Promise<ThreadPayload> {
+  return api.get<ThreadPayload>(`/api/messages/${userId}`, { signal });
 }
 
 export function sendMessage(userId: string, text: string): Promise<DirectMessage> {

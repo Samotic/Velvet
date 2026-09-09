@@ -6225,6 +6225,23 @@ input[type='range']::-moz-range-thumb {
   height: 18px;
 }
 
+
+/* The read receipt. Inside .msg-shell, so the chat tokens apply — and muted,
+   because it is a quiet fact about the last thing you said, not a status
+   badge. Right-aligned under the outgoing edge it belongs to. */
+.bubble-seen {
+  width: 100%;
+  margin-top: 2px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--chat-text-muted);
+  animation: msgIn 0.2s var(--ease) both;
+}
+/* The row is a flex line; the mark needs its own line beneath the bubble. */
+.msg-group.out .msg-row:has(> .bubble-seen) {
+  flex-wrap: wrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

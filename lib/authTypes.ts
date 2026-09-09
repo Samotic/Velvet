@@ -49,6 +49,8 @@ export interface AuthUser {
   followRequests: { from: string; createdAt: string }[];
   /** Visibility of profile activity; all follows require approval. */
   profileVisibility: 'public' | 'private';
+  /** Mutual: off means you neither send receipts nor see them. */
+  readReceipts?: boolean;
   /** Denormalized, accepted edges only — never counts a pending request. */
   followerCount: number;
   followingCount: number;
@@ -164,4 +166,6 @@ export interface ProfileUpdateInput {
   pinnedFilms?: PinnedFilm[];
   /** The privacy toggle controls access to profile activity. */
   profileVisibility?: 'public' | 'private';
+  /** Mutual: off means you neither send read receipts nor see them. */
+  readReceipts?: boolean;
 }

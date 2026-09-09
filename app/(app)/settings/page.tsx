@@ -8,6 +8,7 @@ import { useAuth } from '@/components/auth/AuthProvider';
 import { useToast } from '@/components/Toast';
 import { Logout } from '@/components/icons';
 import { longDate } from '@/lib/format';
+import { AI_DAILY_MESSAGES } from '@/lib/ai';
 
 export default function SettingsPage() {
   return (
@@ -24,6 +25,11 @@ function Settings() {
 
   const [isPrivate, setIsPrivate] = useState(user?.profileVisibility === 'private');
   const [savingPrivacy, setSavingPrivacy] = useState(false);
+
+  // Absent means opted in — the server default is true, and the switch must
+  // not read as off for an account created before the field existed.
+  const [receipts, setReceipts] = useState(user?.readReceipts ?? true);
+  const [savingReceipts, setSavingReceipts] = useState(false);
 
   /**
    * Optimistic: the switch moves under the finger, then reconciles. A toggle
@@ -42,6 +48,27 @@ function Settings() {
       toast.bad('Could not change that setting');
     } finally {
       setSavingPrivacy(false);
+    }
+  }
+
+  /**
+   * Same optimistic shape as the privacy toggle above.
+   *
+   * Defaults to on when the field is absent, matching the server: an account
+   * created before the setting existed is opted in, and the switch must not
+   * render as off for someone who is actually participating.
+   */
+  async function toggleReceipts() {
+    const next = !receipts;
+    setReceipts(next);
+    setSavingReceipts(true);
+    try {
+      await updateProfile({ readReceipts: next });
+    } catch {
+      setReceipts(!next);
+      toast.bad('Could not change that setting');
+    } finally {
+      setSavingReceipts(false);
     }
   }
 
@@ -101,6 +128,34 @@ function Settings() {
               <span className="settings-switch-knob" />
             </button>
           </div>
+
+          <div className="settings-toggle-row">
+            <div>
+              <div className="settings-toggle-label">Read receipts</div>
+              {/*
+                The wording carries the mutuality, because that is the part
+                people are surprised by. Both states say it explicitly rather
+                than only the "off" one — someone deciding whether to turn it
+                off needs to know the cost before they do, not after.
+              */}
+              <p className="settings-toggle-help">
+                {receipts
+                  ? 'People can see when you have read their messages, and you can see when they have read yours.'
+                  : "You will not see when other people read your messages, and they will not see when you read theirs. Turning this off works both ways."}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={receipts}
+              aria-label="Read receipts"
+              className={`settings-switch${receipts ? ' on' : ''}`}
+              disabled={savingReceipts}
+              onClick={() => void toggleReceipts()}
+            >
+              <span className="settings-switch-knob" />
+            </button>
+          </div>
         </div>
       </section>
 
@@ -112,7 +167,7 @@ function Settings() {
           ) : (
             <Row
               label="Messages today"
-              value={`${user?.aiMessagesUsedToday ?? 0} used of 10`}
+              value={`${user?.aiMessagesUsedToday ?? 0} used of ${AI_DAILY_MESSAGES}`}
             />
           )}
 
@@ -135,7 +190,7 @@ function Settings() {
         <div className="filter-label">Session</div>
         <div className="rate-card" style={{ marginTop: 12 }}>
           <p style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 300, lineHeight: 1.6 }}>
-            Signing out clears your session on this device only.
+            Signing out ends your session everywhere, not just on this device.
           </p>
           <button
             type="button"

@@ -71,6 +71,12 @@ export function Thread({ userId }: { userId: string }) {
   // Starts open so the composer doesn't flash shut for the ordinary case; the
   // server's verdict lands a moment later, and the server is what enforces it.
   const [canMessage, setCanMessage] = useState(true);
+  /**
+   * Whether receipts are live for this pair. Starts false so nothing flashes
+   * on before the server has said the other person is opted in — the wrong
+   * direction to be optimistic in.
+   */
+  const [receipts, setReceipts] = useState(false);
 
   /** The open ⋯ menu, and where it was opened from. */
   const [menu, setMenu] = useState<{ m: ThreadMessage; at: { x: number; y: number } } | null>(
@@ -105,11 +111,12 @@ export function Thread({ userId }: { userId: string }) {
     stick.current = true;
 
     getThread(userId, controller.signal)
-      .then(({ messages: list, user, canMessage: allowed }) => {
+      .then(({ messages: list, user, canMessage: allowed, readReceipts }) => {
         setMessages(list);
         setOther(user);
         setFollowing(user.isFollowing);
         setCanMessage(allowed);
+        setReceipts(readReceipts);
         // Opening the thread is what marks it read.
         void markThreadRead(userId).catch(() => {});
       })
@@ -219,6 +226,24 @@ export function Thread({ userId }: { userId: string }) {
     // a reader's peripheral vision.
     const offDeletedForMe = onSocket('message:deletedForMe', (p) => {
       collapseThenRemove(p.messageId);
+    });
+
+    /**
+     * They opened the thread. Marks everything I sent as read.
+     *
+     * Applied to the whole thread rather than a message list, because that is
+     * what the event carries — opening a conversation reads all of it, and the
+     * server has already written exactly that. Guarded on `readerId` so a
+     * receipt from a different conversation cannot tick this one over.
+     *
+     * The server only sends this when both sides are opted in, so there is no
+     * check here: if it arrives, it is meant.
+     */
+    const offRead = onSocket('message:read', (p) => {
+      if (p.readerId !== userId) return;
+      setMessages((prev) =>
+        prev ? prev.map((m) => (m.senderId === userId ? m : { ...m, read: true })) : prev,
+      );
     });
 
     const offStart = onSocket('typing:start', (p) => {
@@ -560,6 +585,28 @@ export function Thread({ userId }: { userId: string }) {
   const groups = useMemo(() => groupMessages(messages ?? [], me?.id), [messages, me?.id]);
   const profileHref = other ? `/profile/${other.username}` : undefined;
 
+  /**
+   * Which bubble, if any, carries the "Seen" mark.
+   *
+   * The last message I sent **in the whole thread**, and only when it has
+   * actually been read. Null when receipts are off for this pair — the client
+   * renders nothing at all rather than a disabled indicator, because a visibly
+   * greyed-out tick still discloses that the other person has receipts off.
+   *
+   * A tombstone is skipped: a retracted message has no content left to have
+   * been seen, and marking one "Seen" reads as a claim about something that is
+   * no longer there.
+   */
+  const receiptFor = useMemo(() => {
+    if (!receipts || !messages?.length || !me?.id) return null;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.senderId !== me.id || m.sendState || m.deletedForEveryone) continue;
+      return m.read ? m.id : null;
+    }
+    return null;
+  }, [receipts, messages, me?.id]);
+
   return (
     <div className="msg-thread">
       {/* Sibling of the scroll container, not inside it. */}
@@ -620,6 +667,17 @@ export function Thread({ userId }: { userId: string }) {
                 otherPhoto={other?.profilePhoto}
                 otherHref={profileHref}
                 collapsing={collapsing}
+                /**
+                 * The id of the last message I sent in the whole thread, or
+                 * null when receipts are off for this pair.
+                 *
+                 * Computed here rather than per group because "last in the
+                 * thread" is not something a group can know — each one only
+                 * sees its own messages, and every group would mark its own
+                 * final bubble. One indicator, at the bottom, the way every
+                 * messenger does it.
+                 */
+                receiptFor={receiptFor}
                 onRetry={retry}
                 onOpenMenu={(m, at) => setMenu({ m, at })}
               />

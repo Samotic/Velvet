@@ -69,6 +69,7 @@ function MessageRow({
   otherPhoto,
   otherHref,
   collapsing,
+  seen,
   onOpenMenu,
 }: {
   m: ThreadMessage;
@@ -79,6 +80,8 @@ function MessageRow({
   otherPhoto: string | null | undefined;
   otherHref: string | undefined;
   collapsing: boolean;
+  /** Renders the read receipt under this bubble. At most one per thread. */
+  seen: boolean;
   onOpenMenu: (m: ThreadMessage, at: { x: number; y: number }) => void;
 }) {
   const time = clockTime(m.createdAt);
@@ -238,6 +241,21 @@ function MessageRow({
           {time}
         </time>
       )}
+
+      {/*
+        The read receipt. At most one per thread, under the last message the
+        viewer sent — never on every bubble, which turns a quiet fact into a
+        column of chrome down the side of the conversation.
+
+        A word rather than a tick: "Seen" needs no legend, where one tick
+        versus two is a convention people have to already know. In the muted
+        chat token, so it sits below the exchange rather than in it.
+
+        Rendered only when receipts are live for the pair; when they are off
+        there is nothing here at all, not a dimmed version — a greyed-out
+        indicator would still disclose that the other person opted out.
+      */}
+      {seen && <span className="bubble-seen">Seen</span>}
     </div>
   );
 }
@@ -248,6 +266,7 @@ export function MessageGroup({
   otherPhoto,
   otherHref,
   collapsing,
+  receiptFor,
   onRetry,
   onOpenMenu,
 }: {
@@ -257,6 +276,8 @@ export function MessageGroup({
   otherHref: string | undefined;
   /** Ids mid-collapse after a delete-for-me, still rendered while they animate. */
   collapsing: ReadonlySet<string>;
+  /** The one message id that carries the "Seen" mark, or null. See Thread. */
+  receiptFor: string | null;
   /** Re-sends a message whose first attempt failed. */
   onRetry: (m: ThreadMessage) => void;
   onOpenMenu: (m: ThreadMessage, at: { x: number; y: number }) => void;
@@ -288,6 +309,7 @@ export function MessageGroup({
             otherPhoto={otherPhoto}
             otherHref={otherHref}
             collapsing={collapsing.has(m.id)}
+            seen={receiptFor === m.id}
             onOpenMenu={onOpenMenu}
           />
         ))}

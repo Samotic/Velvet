@@ -14,6 +14,7 @@ import {
   MAX_MESSAGE_LENGTH,
 } from '../config/messaging';
 import { previewFor, recomputePreview } from '../services/conversationPreview';
+import { receiptsActiveBetween } from '../services/visibility';
 import {
   UploadNotConfiguredError,
   type UploadedMedia,
@@ -199,10 +200,30 @@ export async function thread(req: Request, res: Response): Promise<Response> {
     // of a conversation both people had.
     const rel = await relationBetween(me, otherId);
 
+    /**
+     * The socket event is only half of a receipt. The other half is `read` on
+     * the stored message, which a reload would hand over regardless.
+     *
+     * So the flag is stripped from **my own sent messages** when the pair is
+     * not mutually opted in. Without this, turning receipts off would stop the
+     * live tick and then leak the whole history the next time the thread was
+     * opened — the setting would look like it worked and not work.
+     *
+     * Only outgoing messages are touched. On an incoming one `read` is *my*
+     * unread state, which is mine to know and nothing to do with disclosure.
+     */
+    const receipts = await receiptsActiveBetween(me, otherId);
+
     return ok(res, {
-      messages: messages.map((m) => m.toJSON()),
+      messages: messages.map((m) => {
+        const json = m.toJSON() as Record<string, unknown>;
+        if (!receipts && String(m.senderId) === me) json.read = false;
+        return json;
+      }),
       user: publicProfile(other, me, filmCount, rel),
       canMessage: rel.outgoing === 'accepted' && rel.incoming === 'accepted',
+      /** Lets the client render nothing at all, rather than a greyed-out tick. */
+      readReceipts: receipts,
     });
   } catch (err) {
     console.error('thread error:', err);
@@ -380,11 +401,26 @@ export async function markRead(req: Request, res: Response): Promise<Response> {
 
     if (convo) {
       await Conversation.updateOne({ _id: convo._id }, { $set: { [`unread.${me}`]: 0 } });
-      // Lets the sender's open thread tick over to "read" without a poll.
-      emitToUser(otherId, 'message:read', {
-        conversationId: String(convo._id),
-        readerId: me,
-      });
+
+      /**
+       * The receipt is only sent when **both** sides are opted in.
+       *
+       * Decided here rather than in the client. A browser that chooses not to
+       * render a receipt still received one, and anyone can open the network
+       * tab — "off" has to mean the event was never sent, not that it was
+       * ignored politely.
+       *
+       * Note the messages above are marked read regardless: `read` drives the
+       * recipient's own unread badge, which is theirs and has nothing to do
+       * with what the sender is told. What the setting gates is disclosure.
+       */
+      if (await receiptsActiveBetween(me, otherId)) {
+        // Lets the sender's open thread tick over to "read" without a poll.
+        emitToUser(otherId, 'message:read', {
+          conversationId: String(convo._id),
+          readerId: me,
+        });
+      }
     }
 
     return ok(res, { read: true });

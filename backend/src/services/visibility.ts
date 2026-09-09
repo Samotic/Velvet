@@ -137,3 +137,30 @@ export async function visibleAuthors(
 
 /** The one sentence every restricted endpoint answers with. */
 export const PRIVATE_MESSAGE = 'This account is private';
+
+/* ----------------------------- read receipts ------------------------------ */
+
+/**
+ * Whether read receipts are live between two people.
+ *
+ * Mutual by construction: **both** have to be opted in. Turning the setting off
+ * stops you sending receipts and stops you receiving them, because the
+ * alternative — hiding your own ticks while still watching everyone else's — is
+ * a one-way mirror, and it is the first thing anyone checks.
+ *
+ * One helper because two places need the same verdict and they must not drift:
+ * `markRead` decides whether to emit the live event, and `thread` decides
+ * whether the stored `read` flag is allowed to travel. Answering those
+ * differently is how a feature that looks off still leaks on reload.
+ */
+export async function receiptsActiveBetween(a: string, b: string): Promise<boolean> {
+  const both = await User.find({ _id: { $in: [a, b] } })
+    .select('_id readReceipts')
+    .lean();
+
+  // A missing document means the pair cannot both be opted in.
+  if (both.length !== 2) return false;
+
+  // Absent on accounts predating the field, and the default is on.
+  return both.every((u) => (u.readReceipts ?? true) === true);
+}
