@@ -78,10 +78,24 @@ function RailRow({
   return (
     <Reveal>
       <section className="feed-rail">
+        {/*
+          The number goes *inside* the title, and title+reason share a wrapper —
+          the same shape every other `.section-head` uses.
+
+          As siblings they were the two children of a `space-between` flex row,
+          so the number pinned to the far left and the heading to the far right
+          with the entire viewport between them: `--col` is 100%, so that gap
+          was the width of the screen. `space-between` is right for this class —
+          it separates the heading block from an optional right-hand action, as
+          in TopRated and FriendsActivity — but only when the heading is one
+          child rather than two.
+        */}
         <div className="section-head">
-          <span className="section-num">{String(index + 1).padStart(2, '0')}</span>
           <div>
-            <h2 className="section-title">{rail.title}</h2>
+            <h2 className="section-title">
+              <span className="section-num">{String(index + 1).padStart(2, '0')}</span>
+              {rail.title}
+            </h2>
             <p className="feed-rail-reason">{rail.reason}</p>
           </div>
         </div>
