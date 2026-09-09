@@ -142,7 +142,13 @@ export async function register(req: Request, res: Response): Promise<Response> {
     // finish onboarding. `issueVerification` never throws.
     await issueVerification({ id: user.id, email: user.email, displayName: user.displayName });
 
-    const token = signToken({ userId: user.id, username: user.username, email: user.email });
+    const token = signToken({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      // Whatever the account is on now. A fresh sign-in is not a revocation.
+      tokenVersion: user.tokenVersion ?? 1,
+    });
     // toJSON strips passwordHash — the raw hash never reaches the client.
     return ok(res, { token, user: user.toJSON() }, 201);
   } catch (err) {
@@ -186,7 +192,13 @@ export async function login(req: Request, res: Response): Promise<Response> {
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) return fail(res, 'Invalid email or password', 401);
 
-    const token = signToken({ userId: user.id, username: user.username, email: user.email });
+    const token = signToken({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      // Whatever the account is on now. A fresh sign-in is not a revocation.
+      tokenVersion: user.tokenVersion ?? 1,
+    });
     return ok(res, { token, user: user.toJSON() });
   } catch (err) {
     console.error('login error:', err);
@@ -217,12 +229,29 @@ export async function me(req: Request, res: Response): Promise<Response> {
 /* ------------------------------- logout ---------------------------------- */
 
 /**
- * Logout is a client-side token discard — the JWT is stateless, so there is no
- * server session to destroy. The endpoint exists because the spec lists it and
- * because it gives us one place to hang revocation if a denylist ever lands.
+ * Ends every session on this account, not just this browser's.
+ *
+ * This used to be a no-op that answered `{ ok: true }` — logout cleared the
+ * token locally and the server went on honouring it for the rest of its seven
+ * days. Someone who had copied a token kept access through a logout, which is
+ * the moment a user believes they have taken it away.
+ *
+ * Bumping `tokenVersion` invalidates **all** of them, including the caller's
+ * other devices. That is the right default for a "log out" a user reaches for
+ * when something feels wrong; a per-device logout would need per-device
+ * identity, which this token does not carry.
+ *
+ * Still answers success if the account is gone: the caller wanted to be logged
+ * out, and they are.
  */
-export async function logout(_req: Request, res: Response): Promise<Response> {
-  return ok(res, { ok: true });
+export async function logout(req: Request, res: Response): Promise<Response> {
+  try {
+    await User.updateOne({ _id: req.user!.userId }, { $inc: { tokenVersion: 1 } });
+    return ok(res, { ok: true });
+  } catch (err) {
+    console.error('logout error:', err);
+    return fail(res, 'Could not end that session', 500);
+  }
 }
 
 /* --------------------------- username availability ----------------------- */
@@ -369,7 +398,13 @@ export async function onboardingProfile(req: Request, res: Response): Promise<Re
 
     // The handle is in the JWT, so a changed username needs a fresh token or
     // every later request would carry a stale one.
-    const token = signToken({ userId: user.id, username: user.username, email: user.email });
+    const token = signToken({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      // Whatever the account is on now. A fresh sign-in is not a revocation.
+      tokenVersion: user.tokenVersion ?? 1,
+    });
     return ok(res, { token, user: user.toJSON() });
   } catch (err) {
     if (isDuplicateKeyError(err)) return fail(res, 'Username taken', 409);
@@ -555,15 +590,33 @@ export async function resetPassword(req: Request, res: Response): Promise<Respon
     user.passwordResetExpires = null;
     // Reaching the inbox proves the address, so a reset doubles as verification.
     user.emailVerified = true;
+
+    /**
+     * Every session issued before this moment dies here.
+     *
+     * A password reset is what someone does when they think an account is
+     * compromised, and until now it changed nothing for whoever already held a
+     * token — they kept access for the rest of the seven days. This is the
+     * line that makes the reset mean what the user thinks it means.
+     */
+    user.tokenVersion = (user.tokenVersion ?? 1) + 1;
     await user.save();
 
-    // Sign them straight in — they have just proved control of the account, and
-    // bouncing them to a login form to retype the password they chose 4 seconds
-    // ago is friction for its own sake.
+    /**
+     * Signed **after** the bump, and from the same in-memory document.
+     *
+     * The ordering is the whole race: sign first and the new token carries the
+     * old version, so the user is logged out by their own password change on
+     * their very next request — with no way to get back in except another
+     * reset. Reading `user.tokenVersion` after `save()` guarantees the token
+     * matches what was persisted, rather than a value computed separately and
+     * hoped to agree.
+     */
     const authToken = signToken({
       userId: user.id,
       username: user.username,
       email: user.email,
+      tokenVersion: user.tokenVersion,
     });
     return ok(res, { token: authToken, user: user.toJSON() });
   } catch (err) {
@@ -625,6 +678,8 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
       userId: user.id,
       username: user.username,
       email: user.email,
+      // Whatever the account is on now. A fresh sign-in is not a revocation.
+      tokenVersion: user.tokenVersion ?? 1,
     });
 
     const next = state.next && state.next.startsWith('/') ? state.next : '';

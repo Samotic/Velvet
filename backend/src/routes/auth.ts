@@ -66,7 +66,9 @@ const mailLimiter = rateLimit({
 
 router.post('/register', authLimiter, register);
 router.post('/login', authLimiter, login);
-router.post('/logout', logout);
+// requireAuth, which it never had: logout now bumps tokenVersion, so it must
+// know whose sessions it is ending rather than answering a blind 200.
+router.post('/logout', requireAuth, logout);
 router.get('/me', requireAuth, me);
 
 /* --- email verification --- */

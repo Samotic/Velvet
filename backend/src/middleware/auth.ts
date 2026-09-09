@@ -13,21 +13,77 @@ function bearer(req: Request): string | null {
 }
 
 /**
- * Verifies a Bearer JWT and attaches the decoded payload to req.user.
- * Responds 401 when the header is missing or the token is invalid/expired.
+ * Verifies a Bearer JWT, checks it has not been revoked, and attaches the
+ * decoded payload to `req.user`.
+ *
+ * ── Why this reads the database ──
+ * A JWT is a bearer credential: once signed it is valid until it expires, and
+ * these live seven days. Signature verification alone cannot tell a current
+ * session from one the user has since ended, so a stolen token survived both a
+ * password reset and a logout. The only way to disown an already-issued token
+ * is to compare it against something mutable, and that something has to be
+ * read.
+ *
+ * ── What it costs ──
+ * One `findById` on the primary key, projected to two fields and `.lean()`, on
+ * every authenticated request. On Atlas in the same region that is roughly
+ * 1–3ms; it is an `_id` hit, so it does not degrade as the collection grows.
+ *
+ * The routes that also use `requireVerified` pay **nothing extra**: that
+ * middleware used to do this same lookup itself, and now reuses what this one
+ * loaded. So verified routes are unchanged, and everything else gains one
+ * indexed read. That is the price of being able to end a session, and it is
+ * the cheapest mechanism that actually works — a denylist needs storage and
+ * eviction, and short-lived tokens plus refresh needs a second endpoint and a
+ * rotation story.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const token = bearer(req);
   if (!token) {
     fail(res, 'Authentication required', 401);
     return;
   }
 
+  let payload;
   try {
-    req.user = verifyToken(token);
-    next();
+    payload = verifyToken(token);
   } catch {
     fail(res, 'Invalid or expired token', 401);
+    return;
+  }
+
+  try {
+    const user = await User.findById(payload.userId).select('tokenVersion emailVerified').lean();
+    if (!user) {
+      // The account is gone. A token for a deleted user is not a server error.
+      fail(res, 'Invalid or expired token', 401);
+      return;
+    }
+
+    /**
+     * The revocation check.
+     *
+     * `tokenVersion` starts at 1 and the claim is required, so a token from
+     * before this existed fails at `verifyToken` above rather than here — see
+     * the note there. This branch catches the live case: a token signed before
+     * a reset or a logout bumped the number.
+     */
+    if (payload.tokenVersion !== (user.tokenVersion ?? 1)) {
+      fail(res, 'Session ended. Please sign in again.', 401);
+      return;
+    }
+
+    req.user = payload;
+    // Handed forward so `requireVerified` does not repeat the same read.
+    req.authUser = { emailVerified: Boolean(user.emailVerified) };
+    next();
+  } catch (err) {
+    console.error('requireAuth error:', err);
+    fail(res, 'Could not verify your session', 500);
   }
 }
 
@@ -73,12 +129,25 @@ export async function requireVerified(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const user = await User.findById(req.user!.userId).select('emailVerified');
-    if (!user) {
+    /**
+     * Reuses the read `requireAuth` already did.
+     *
+     * This used to issue its own `findById`, which meant every verified route
+     * hit the user document twice once `requireAuth` started reading it. The
+     * fallback is kept for the theoretical case of this running without
+     * `requireAuth` in front of it — every route mounts them together, but a
+     * middleware that silently trusts its predecessor ran is one refactor away
+     * from a hole.
+     */
+    const verified =
+      req.authUser?.emailVerified ??
+      (await User.findById(req.user!.userId).select('emailVerified').lean())?.emailVerified;
+
+    if (verified === undefined) {
       fail(res, 'User not found', 404);
       return;
     }
-    if (!user.emailVerified) {
+    if (!verified) {
       fail(res, 'EMAIL_NOT_VERIFIED: Verify your email address to use this feature', 403);
       return;
     }

@@ -89,6 +89,16 @@ export interface IUser {
   pendingRequestCount: number;
   unreadNotificationCount: number;
   /**
+   * Bumped to invalidate every token already issued for this account.
+   *
+   * A JWT is stateless: once signed it is valid until it expires, and this
+   * project signs for seven days. Without a version to compare against, a
+   * password reset changes nothing for whoever already holds a stolen token,
+   * and logging out only clears the browser copy. This is the one number that
+   * makes both of those actually end a session.
+   */
+  tokenVersion: number;
+  /**
    * Lifts the advisor's daily cap. Not purchasable — Velvet is free and has no
    * paid tier; this is set by hand for the operator or a trusted account.
    */
@@ -195,6 +205,17 @@ const userSchema = new Schema<IUser>(
     followingCount: { type: Number, default: 0, min: 0 },
     pendingRequestCount: { type: Number, default: 0, min: 0 },
     unreadNotificationCount: { type: Number, default: 0, min: 0 },
+    /**
+     * Starts at 1, not 0.
+     *
+     * Every token signed before this field existed carries no `tokenVersion`
+     * claim at all, and those must not pass. Treating a missing claim as 0
+     * would let all of them through against a default of 0 — the exact silent
+     * pass this is meant to prevent. Starting at 1 means "absent" can never
+     * match, so the old sessions die once, on deploy, and every session after
+     * that is checked properly.
+     */
+    tokenVersion: { type: Number, default: 1, min: 1 },
     isPro: { type: Boolean, default: false },
     aiMessagesUsedToday: { type: Number, default: 0 },
     aiMessagesResetAt: { type: Date, default: () => new Date() },

@@ -6,6 +6,11 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthTokenPayload;
+      /**
+       * Fields `requireAuth` already read from the user document, passed
+       * forward so downstream middleware need not fetch the same row again.
+       */
+      authUser?: { emailVerified: boolean };
     }
   }
 }
