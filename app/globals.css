@@ -5050,7 +5050,15 @@ textarea.input {
     justify-content: flex-start;
   }
 }
+/* Figure and label sit on one line, so the gap has to be declared. Left to
+   inline flow they butt together — "8FILMS" — because the label's margin was
+   written for a stacked layout and does nothing to an inline box.
+   `baseline` rather than `center`: the 27px numeral and the 11px caps share a
+   footing, which is what stops the label riding high against the digit. */
 .profile-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
   background: none;
   border: none;
   padding: 0;
@@ -5075,7 +5083,9 @@ textarea.input {
   letter-spacing: 1.6px;
   text-transform: uppercase;
   color: var(--muted);
-  margin-top: 6px;
+  /* No `margin-top`. It was a leftover from a stacked layout and was inert
+     while these were inline; under flex it would push the label off the
+     baseline it was just aligned to. The `gap` above owns the spacing now. */
 }
 .profile-actions {
   display: flex;
