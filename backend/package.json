@@ -21,7 +21,8 @@
     "verify:privacy": "tsx scripts/verify-privacy.ts",
     "verify:quota": "tsx scripts/verify-ai-quota.ts",
     "verify:revocation": "tsx scripts/verify-revocation.ts",
-    "verify:receipts": "tsx scripts/verify-read-receipts.ts"
+    "verify:receipts": "tsx scripts/verify-read-receipts.ts",
+    "verify:notifications": "tsx scripts/verify-notification-dedupe.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

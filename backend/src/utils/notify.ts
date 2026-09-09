@@ -45,22 +45,55 @@ export async function notify(opts: {
     const actionState = opts.type === 'follow_request' ? 'pending' : null;
 
     /**
-     * Upsert rather than create, against the sparse unique
-     * (userId, type, followId) index. This is what makes a double-tapped
-     * Follow produce one card: both taps carry the same edge id.
+     * What counts as "the same notification", per type.
      *
-     * It deliberately does **not** dedupe across unfollow → re-follow. That
-     * cycle deletes the edge and creates a new one with a new id, so the
-     * target gets a second card — which is correct, since it is a second
-     * follow event, and §7's aggregation is what collapses the noise.
+     * This used to be one rule — dedupe on `followId` if there is one, else
+     * insert — which quietly meant the three types that carry no `followId`
+     * were deduped by the unique index instead, on `(userId, type)` alone.
+     * One `message` card per user, ever. See the note on that index.
      *
-     * `createdAt` is refreshed so a re-followed card surfaces at the top
-     * rather than staying buried at its original position.
+     * Each type gets the key its own behaviour wants:
+     *
+     *  - **follow types** — the edge. A double-tapped Follow is one card.
+     *    Deliberately does *not* dedupe across unfollow → re-follow: that
+     *    cycle makes a new edge, and a second follow really is a second event.
+     *
+     *  - **message** — the sender. The card says "you have messages from X",
+     *    not "here is message #14"; the thread is the record. Nothing in the
+     *    UI collapses these (`aggregate.ts` groups follower types only), so
+     *    without this a chatty friend becomes twenty cards.
+     *
+     *  - **review_like** — the liker and the review. Stops like/unlike/like
+     *    stacking, while different likers still get their own rows, which is
+     *    what any future "X and 4 others" needs.
+     *
+     *  - **review_reply** — nothing. Each reply is a distinct utterance with
+     *    its own text, and collapsing two from one person silently loses one.
+     *
+     * `createdAt` is refreshed on every upsert, so a collapsed card surfaces
+     * at the top rather than staying buried where it first landed.
      */
+    const dedupeKey = (): Record<string, unknown> => {
+      if (opts.followId) {
+        return { userId: opts.userId, type: opts.type, followId: opts.followId };
+      }
+      if (opts.type === 'message' && opts.fromUserId) {
+        return { userId: opts.userId, type: 'message', fromUserId: opts.fromUserId };
+      }
+      if (opts.type === 'review_like' && opts.fromUserId && opts.contentId) {
+        return {
+          userId: opts.userId,
+          type: 'review_like',
+          fromUserId: opts.fromUserId,
+          contentId: opts.contentId,
+        };
+      }
+      // No dedupe: a filter that cannot match forces an insert.
+      return { _id: new Types.ObjectId() };
+    };
+
     const doc = await Notification.findOneAndUpdate(
-      opts.followId
-        ? { userId: opts.userId, type: opts.type, followId: opts.followId }
-        : { _id: new Types.ObjectId() },
+      dedupeKey(),
       {
         $set: {
           userId: opts.userId,
@@ -79,9 +112,21 @@ export async function notify(opts: {
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 
-    // Counter mirrors the row. Kept here because this is the one funnel every
-    // notification passes through, so it cannot fall out of step.
-    await User.updateOne({ _id: opts.userId }, { $inc: { unreadNotificationCount: 1 } });
+    /**
+     * Recomputed, not incremented.
+     *
+     * `$inc: 1` was right when every notify inserted a row. It is wrong now
+     * that several types collapse into an existing card: twenty messages from
+     * one person are one card, and would have been twenty on the badge — a
+     * number pointing at a list that does not contain it.
+     *
+     * Counting is correct by construction rather than by bookkeeping, and it
+     * is what `readOne` in the notification controller already does. One
+     * indexed count against `(userId, read)` on a path that runs per
+     * notification, not per request.
+     */
+    const unread = await Notification.countDocuments({ userId: opts.userId, read: false });
+    await User.updateOne({ _id: opts.userId }, { $set: { unreadNotificationCount: unread } });
 
     // toObject(), not toJSON(): the User transform renames `_id` to `id` on the
     // populated actor, and the serializer reads `_id`.

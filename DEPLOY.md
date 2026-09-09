@@ -98,7 +98,21 @@ in the build cache — if you change it, redeploy without the cache.
 4. **Google**, if used. Add `https://<railway-url>/api/auth/google/callback` to
    the Authorised redirect URIs, then set `GOOGLE_CALLBACK_URL` to that exact
    string, or set `API_URL` and let it be derived.
-5. **The migration**, once you have confirmed the API is talking to the
+5. **The index migration.** Indexes are no longer built on boot in production
+   — `autoIndex` is off, because Mongoose cannot change an existing index and
+   fails silently when it tries, leaving the schema and the database
+   disagreeing. Run it from a machine holding the production `MONGODB_URI`:
+
+   ```bash
+   cd backend && npx tsx scripts/migrate-notification-index.ts --dry
+   cd backend && npx tsx scripts/migrate-notification-index.ts
+   ```
+
+   It is idempotent — it inspects the live index and does nothing if the swap
+   has already happened. **From here on, any index change is a script**, not a
+   schema edit: an edit alone will not take effect in production.
+
+6. **The soft-delete migration**, once you have confirmed the API is talking to the
    production database. It is not in the image — `scripts/` is excluded — so run
    it from a machine holding the production `MONGODB_URI`:
 
