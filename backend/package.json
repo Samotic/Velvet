@@ -22,7 +22,8 @@
     "verify:quota": "tsx scripts/verify-ai-quota.ts",
     "verify:revocation": "tsx scripts/verify-revocation.ts",
     "verify:receipts": "tsx scripts/verify-read-receipts.ts",
-    "verify:notifications": "tsx scripts/verify-notification-dedupe.ts"
+    "verify:notifications": "tsx scripts/verify-notification-dedupe.ts",
+    "verify:media": "tsx scripts/verify-advisor-media.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

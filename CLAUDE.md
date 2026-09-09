@@ -592,5 +592,26 @@ resolves to Gemini rather than silently falling back to the retired provider.
   Gemini unreachable, a safety refusal, the write failing — not just the silent
   clip, because a Gemini outage must not quietly cost every user a message per
   attempt. `verify:quota` holds that line.
+- **The advisor attaches artwork, and never generates it.** A reply carries up
+  to three posters on its own `media` array — resolved, not drawn. `linkTitles`
+  already searches the catalogue for every `[[Title]]` marker to build the
+  links, and `posterUrl` is a field of that same response, so this costs **no
+  model call and no extra catalogue call**. A title that does not resolve, or
+  resolves to a row with no poster, contributes nothing and the prose stands on
+  its own; nothing ever invents a URL. Its own array rather than markers in the
+  prose, because the text may stream one day and this cannot — it needs the
+  finished reply to know which titles were named. Rendered `unoptimized`: these
+  are TMDB CDN URLs, already sized and cached by TMDB, and routing them through
+  next/image would bill the transformation and the bandwidth to us for artwork
+  somebody else already serves well. Direct-message photos keep the optimiser —
+  those are ours, on Cloudinary, at arbitrary camera-roll sizes.
+- **KNOWN GAP: games do not resolve in the advisor.** `linkTitles` calls
+  `tmdb.search(title, 'all')`, which returns films and series only. A
+  `[[Cyberpunk 2077]]` marker therefore gets no link **and no poster** — it
+  renders as a bare search link. This predates the artwork work and is not
+  caused by it. Fixing it means adding an IGDB lookup to the resolution path and
+  deciding how to pick between a TMDB and an IGDB hit for the same string; until
+  someone does, the advisor can recommend a game in prose but cannot link or
+  illustrate one.
 - **`/api/ai/picks` is not a model call** and never should be — it renders on
   every home view. It is TMDB discover filtered by the user's genres.

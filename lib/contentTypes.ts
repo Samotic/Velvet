@@ -252,12 +252,37 @@ export interface ActivityItem {
 
 /* --------------------------------- AI ------------------------------------ */
 
+/**
+ * Artwork attached to an advisor reply.
+ *
+ * Resolved from the catalogue, never generated: the advisor names titles as
+ * `[[Title]]`, the server searches those to build the links, and the poster is
+ * a field of that same response. Mirrors `AdvisorMedia` in
+ * backend/src/services/catalogTypes.ts.
+ *
+ * Its own array rather than markers in the prose — the text may stream one day
+ * and this cannot, because it needs the finished reply to know which titles
+ * were named.
+ */
+export interface AiMedia {
+  contentId: string;
+  contentType: ContentType;
+  title: string;
+  /** A TMDB or IGDB CDN URL. Rendered unoptimised — see AdvisorScreen. */
+  url: string;
+  kind: 'poster';
+  /** Width ÷ height. Reserves the box before the bytes land. */
+  aspect: number;
+}
+
 export interface AiMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   /** Follow-up chips shown under an assistant turn. */
   suggestions: string[];
+  /** Up to three posters for the titles this reply recommended. */
+  media?: AiMedia[];
   createdAt: string;
 }
 

@@ -6252,6 +6252,42 @@ input[type='range']::-moz-range-thumb {
   flex-wrap: wrap;
 }
 
+/* --- advisor media -------------------------------------------------------
+   Posters attached to an advisor reply.
+
+   The advisor is not inside `.msg-shell`, so this uses the indigo ramp rather
+   than the chat tokens — those two composers were split precisely so a change
+   to one stops restyling the other, and the media follows the same line.
+
+   A row of up to three, small. A poster here is a glance at what was named and
+   a way through to the detail page; the prose is still the answer. */
+.ai-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+/* The ratio comes inline from the payload, so the box is the right shape
+   before the bytes land and the thread never reflows under the reader.
+   `position: relative` is what the `fill` layout measures against. */
+.ai-media-item {
+  position: relative;
+  display: block;
+  width: 104px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-raise);
+  border: 1px solid var(--line-soft);
+  transition: border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.ai-media-item:hover {
+  border-color: var(--line-accent);
+  transform: translateY(-3px);
+}
+.ai-media-item img {
+  object-fit: cover;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

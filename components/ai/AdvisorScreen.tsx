@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -20,7 +21,7 @@ import {
 } from '@/lib/ai';
 import { useRecorder } from '@/components/messages/useRecorder';
 import { MAX_VOICE_SECONDS } from '@/lib/messages';
-import type { AiMessage, WatchStats } from '@/lib/contentTypes';
+import { hrefFor, type AiMessage, type WatchStats } from '@/lib/contentTypes';
 import { moodLabel } from '@/lib/onboarding';
 import { getWatchStats } from '@/lib/ratings';
 
@@ -283,6 +284,45 @@ function Advisor() {
                     ),
                   )}
                 </div>
+
+                {/*
+                  Posters for the titles this reply recommended. Resolved from
+                  the catalogue, never generated — see AiMedia.
+
+                  `unoptimized` on purpose. These are already TMDB CDN URLs,
+                  sized and cached by TMDB; routing them through next/image
+                  would put every poster through Vercel's optimiser and bill
+                  the transformation and the bandwidth to us for artwork
+                  somebody else is already serving well. The direct-message
+                  Photo component keeps the optimiser — its images are ours, on
+                  Cloudinary, and arbitrary sizes from a camera roll are
+                  exactly what it earns its keep on.
+
+                  The wrapper holds the ratio, so the row is the right height
+                  before a byte arrives and the thread does not jump.
+                */}
+                {m.role === 'assistant' && (m.media?.length ?? 0) > 0 && (
+                  <div className="ai-media">
+                    {m.media!.map((art) => (
+                      <Link
+                        key={`${art.contentType}-${art.contentId}`}
+                        href={hrefFor(art.contentType, art.contentId)}
+                        className="ai-media-item"
+                        style={{ aspectRatio: String(art.aspect) }}
+                        aria-label={art.title}
+                      >
+                        <Image
+                          src={art.url}
+                          alt={art.title}
+                          fill
+                          unoptimized
+                          loading="lazy"
+                          sizes="120px"
+                        />
+                      </Link>
+                    ))}
+                  </div>
+                )}
 
                 {m.role === 'assistant' && m.suggestions.length > 0 && (
                   <div className="msg-chips">

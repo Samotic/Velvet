@@ -62,3 +62,47 @@ export function normaliseScore(value: number | null | undefined): number | null 
   if (typeof value !== 'number' || value <= 0) return null;
   return Math.round(value * 10) / 10;
 }
+
+/**
+ * Artwork the advisor attaches to a reply.
+ *
+ * Not generated — resolved. The advisor recommends titles as `[[Title]]`
+ * markers, the reply already gets searched against the catalogue to turn those
+ * into links, and the poster is sitting unused in that same search response.
+ * So this costs no model call and no extra catalogue call: it is a field that
+ * was already fetched and thrown away.
+ *
+ * Carried as its own array on the message rather than inside the prose. The
+ * text may stream one day; this cannot, because it needs the completed reply
+ * to know which titles were named. Keeping them separate means the client
+ * never has to parse half-arrived markdown for a URL.
+ */
+export interface AdvisorMedia {
+  /** The catalogue pair, same as everywhere else. */
+  contentId: string;
+  contentType: ContentType;
+  title: string;
+  /** A TMDB or IGDB CDN URL. Never ours, never proxied. */
+  url: string;
+  /**
+   * What the image is. Only `poster` today.
+   *
+   * `backdrop` is deliberately absent rather than optional-and-unimplemented:
+   * `search()` returns a `CatalogSummary`, which has no backdrop — that lives
+   * on `CatalogDetail`, behind one extra request per title. Adding it is a cost
+   * decision, so the field names the kind and the shape is ready when someone
+   * takes it.
+   */
+  kind: 'poster';
+  /**
+   * Width ÷ height, so the client can reserve the box before the bytes land.
+   *
+   * A ratio rather than pixel dimensions because the search response carries no
+   * dimensions — writing width and height here would mean inventing numbers.
+   * The ratio is a fixed convention per source and is not a guess.
+   */
+  aspect: number;
+}
+
+/** TMDB posters are a fixed 2:3. */
+export const POSTER_ASPECT = 2 / 3;

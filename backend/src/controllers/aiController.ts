@@ -16,6 +16,7 @@ import {
 } from '../lib/ai';
 import { isValidAudioDataUrl, stripMimeParams } from '../services/cloudinary';
 import * as tmdb from '../services/tmdb';
+import { POSTER_ASPECT, type AdvisorMedia } from '../services/catalogTypes';
 import {
   dislikedTitles,
   lovedTitles,
@@ -140,6 +141,10 @@ async function tasteProfile(userId: string): Promise<TasteProfile | null> {
 
 /* ------------------------------ title links ------------------------------ */
 
+/** At most this many posters ride along with one reply. Three, so "show me
+ *  every Marvel poster" answers with a reply rather than a wall. */
+const MAX_ADVISOR_MEDIA = 3;
+
 /**
  * Rewrites the `[[Title]]` markers the advisor emits into `[[Title|type|id]]`, so
  * the client can turn each recommendation into a link to its detail page.
@@ -148,10 +153,14 @@ async function tasteProfile(userId: string): Promise<TasteProfile | null> {
  * served from the TMDB client's cache in most cases. A title that doesn't
  * resolve is left as a bare `[[Title]]` — the client renders those as a search
  * link, which is better than a dead link to a guessed id.
+ *
+ * Also returns the artwork for those same resolutions. One pass, one search
+ * per title: the poster is a field of a response this already makes, so
+ * attaching it costs no extra call of any kind — and no model call at all.
  */
-async function linkTitles(text: string): Promise<string> {
+async function linkTitles(text: string): Promise<{ text: string; media: AdvisorMedia[] }> {
   const titles = extractTitles(text);
-  if (!titles.length) return text;
+  if (!titles.length) return { text, media: [] };
 
   const resolved = await Promise.all(
     titles.map(async (title) => {
@@ -160,21 +169,55 @@ async function linkTitles(text: string): Promise<string> {
         // Prefer an exact case-insensitive title match; the first hit is a
         // reasonable fallback since TMDB orders by relevance.
         const exact = hits.find((h) => h.title.toLowerCase() === title.toLowerCase());
-        const best = exact ?? hits[0];
-        return best ? ([title, `${best.type}|${best.id}`] as const) : ([title, null] as const);
+        return { title, best: exact ?? hits[0] ?? null };
       } catch {
-        return [title, null] as const;
+        return { title, best: null };
       }
     }),
   );
 
   let out = text;
-  for (const [title, suffix] of resolved) {
-    if (!suffix) continue;
+  for (const { title, best } of resolved) {
+    if (!best) continue;
     // Replace every occurrence of this exact marker.
-    out = out.split(`[[${title}]]`).join(`[[${title}|${suffix}]]`);
+    out = out.split(`[[${title}]]`).join(`[[${title}|${best.type}|${best.id}]]`);
   }
-  return out;
+
+  /**
+   * Artwork, from the search that just happened.
+   *
+   * `extractTitles` returns distinct titles in document order, so the posters
+   * arrive in the order the reply names them — image one is the film mentioned
+   * first, which is the only ordering a reader can follow.
+   *
+   * Deduped on the resolved `(type, id)` rather than the title string: two
+   * different spellings of one film are one poster, while "Dune" and "Dune:
+   * Part Two" stay separate. A title that did not resolve, or resolved to a
+   * catalogue row with no poster, contributes nothing and the prose stands on
+   * its own — nothing here ever invents a URL.
+   */
+  const media: AdvisorMedia[] = [];
+  const seen = new Set<string>();
+
+  for (const { best } of resolved) {
+    if (media.length >= MAX_ADVISOR_MEDIA) break;
+    if (!best?.posterUrl) continue;
+
+    const key = `${best.type}:${best.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    media.push({
+      contentId: best.id,
+      contentType: best.type,
+      title: best.title,
+      url: best.posterUrl,
+      kind: 'poster',
+      aspect: POSTER_ASPECT,
+    });
+  }
+
+  return { text: out, media };
 }
 
 /* --------------------------------- chat ---------------------------------- */
@@ -287,7 +330,7 @@ export async function chat(req: Request, res: Response): Promise<Response> {
       timeZone: str(body.timeZone),
     });
 
-    const linked = await linkTitles(reply);
+    const { text: linked, media } = await linkTitles(reply);
     const suggestions = followUps(reply, profile);
 
     // Persist both turns so the log survives a reload and the next request has
@@ -302,6 +345,7 @@ export async function chat(req: Request, res: Response): Promise<Response> {
       userId,
       role: 'assistant',
       content: linked,
+      media,
       suggestions,
     });
 
@@ -424,3 +468,13 @@ export async function picks(req: Request, res: Response): Promise<Response> {
     return fail(res, 'Could not load your picks', 502);
   }
 }
+
+/**
+ * Exposed for `scripts/verify-advisor-media.ts` only.
+ *
+ * `linkTitles` is the whole of the artwork logic — resolution, the cap, the
+ * dedupe — and it is not reachable from a route without a model call in front
+ * of it. Testing it through `POST /api/ai/chat` would mean stubbing Gemini to
+ * assert something Gemini has no part in.
+ */
+export const __testing = { linkTitles };
