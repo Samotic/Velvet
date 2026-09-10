@@ -286,6 +286,23 @@ that flag flips at step 1, so keying on it would redirect users home mid-flow.
   the client secret in the browser bundle, opens a second Mongo connection that
   skips the Mongoose models, and issues a **cookie** session the Express API
   cannot read — so every API call after a Google login would 401.
+- **SECURITY GAP — the Google callback puts a live session token in the URL.**
+  `googleCallback` redirects to `/auth/callback?token=<JWT>`, and that JWT is a
+  full session, valid for **seven days**. A query string is kept wherever URLs
+  are kept: the browser's history (`router.replace` on the callback page only
+  keeps it out of the *back stack*, not out of history), the frontend host's
+  access logs, the Next dev server's request log, and anything else that
+  records page URLs. Whoever can read one of those can act as that user until
+  the token expires or its `tokenVersion` is bumped (a password reset does).
+  Email/password sign-in is unaffected — its token arrives in a response body.
+  **Not fixed yet.** The likely fixes, strongest first:
+  - **A one-time exchange code.** The API redirects with `?code=…` — random,
+    stored hashed like the other credential tokens, single-use, expiring in
+    about a minute — and the callback page POSTs it for the JWT. What reaches
+    history and logs is dead by the time anyone reads it. Closes both leaks.
+  - **The fragment** (`/auth/callback#token=…`). Browsers never send a
+    fragment to the server, so it stays out of access logs — but it is still
+    recorded in browser history, so on its own it closes only half the gap.
 - The redirect URI registered with Google is the **API's** origin
   (`{API_URL}/api/auth/google/callback`), not the frontend's.
 - A Google profile resolves in three steps: known `googleId` → sign in; known

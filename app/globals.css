@@ -4285,6 +4285,15 @@ textarea.input {
   flex: 1;
   overflow-y: auto;
 }
+/* The inbox's "no conversations" and "no matches" line, on the chat tokens.
+   It used to borrow `.menu-empty` from the navbar dropdown, which put an
+   indigo-ramp colour inside the one surface that runs on `--chat-*`. */
+.msg-list-empty {
+  padding: 38px 18px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--chat-text-muted);
+}
 .conv {
   display: flex;
   align-items: center;
@@ -6163,11 +6172,30 @@ input[type='range']::-moz-range-thumb {
 .msg-sheet button:disabled:hover {
   background: transparent;
 }
-.msg-sheet-cancel {
+/*
+   Cancel, set apart from the actions above it: centred, on the darker chat
+   plane, in the muted text colour.
+
+   Qualified with the container and the element on purpose. `.msg-menu button`
+   and `.msg-sheet button` (0,1,1) set background and colour on every item, and
+   a bare `.msg-sheet-cancel` (0,1,0) lost to both — only the centring ever
+   applied, so Cancel looked like one more action. At (0,2,1) it wins on
+   specificity rather than on where it sits in the file.
+*/
+.msg-menu button.msg-sheet-cancel,
+.msg-sheet button.msg-sheet-cancel {
   margin-top: 4px;
   justify-content: center;
   background: var(--chat-surface);
   color: var(--chat-text-muted);
+}
+/* The item hover is also (0,2,1) and earlier in the file, so the rule above
+   would swallow it and Cancel would give no feedback at all. Its own hover:
+   the text lifts, the plane stays. */
+.msg-menu button.msg-sheet-cancel:hover,
+.msg-sheet button.msg-sheet-cancel:hover {
+  background: var(--chat-surface);
+  color: var(--chat-text);
 }
 @keyframes sheetUp {
   from {

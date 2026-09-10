@@ -353,6 +353,68 @@ async function run(): Promise<void> {
       console.log(`    ${k} → ${JSON.stringify(v.text)}  fromMe=${String(v.senderId) === k}`);
     }
 
+    /* --- 8. the recipient hides a tombstone ----------------------------- */
+
+    /**
+     * The thread UI now offers "Delete for me" on a "This message was deleted"
+     * bubble, so this path is reachable from a click rather than only from curl.
+     *
+     * The trap is the unread counter. Retracting an unread message already gave
+     * its unread back, and retraction leaves `read: false` on the tombstone. A
+     * hide that released it again would take a count belonging to a *different*
+     * unread message — the `$gt: 0` guard only stops it going negative. So Bob
+     * starts with two unread, one is retracted, and after he hides the tombstone
+     * exactly one must remain.
+     */
+    const stillUnread = await make({ text: 'still unread' });
+    const retractedUnread = await make({ text: 'retracted while unread' });
+    const unreadFor = async () =>
+      (await Conversation.findById(convo._id))?.unread?.get(bob.id) ?? 0;
+    await Conversation.updateOne({ _id: convo._id }, { $set: { [`unread.${bob.id}`]: 2 } });
+    console.log(`\n  fixtures: stillUnread=${stillUnread._id}  retractedUnread=${retractedUnread._id}`);
+    console.log(`  bob's unread before: ${await unreadFor()}`);
+
+    r = await curl(
+      'Alice retracts a message Bob has not read',
+      ['-X', 'DELETE', `${BASE}/api/messages/${retractedUnread._id}?scope=everyone`, ...auth(alice.token)],
+      `curl -X DELETE '${BASE}/api/messages/${retractedUnread._id}?scope=everyone' \\\n    -H 'Authorization: Bearer $ALICE'`,
+    );
+    expect('retract an unread message', r.status, 200, r.body);
+    expect("the retraction gives back bob's unread once", await unreadFor(), 1);
+
+    r = await curl(
+      'Bob hides the tombstone from his own view',
+      ['-X', 'DELETE', `${BASE}/api/messages/${retractedUnread._id}?scope=me`, ...auth(bob.token)],
+      `curl -X DELETE '${BASE}/api/messages/${retractedUnread._id}?scope=me' \\\n    -H 'Authorization: Bearer $BOB'`,
+    );
+    expect('delete for me on a tombstone', r.status, 200, r.body);
+    expect(
+      "hiding the tombstone does not take the other message's unread",
+      await unreadFor(),
+      1,
+    );
+
+    const bobHid = await curl(
+      "Bob's thread — the tombstone is gone from his view",
+      [`${BASE}/api/messages/${alice.id}`, ...auth(bob.token)],
+      `curl ${BASE}/api/messages/${alice.id} -H 'Authorization: Bearer $BOB'`,
+    );
+    const aliceKeeps = await curl(
+      "Alice's thread — her tombstone is untouched",
+      [`${BASE}/api/messages/${bob.id}`, ...auth(alice.token)],
+      `curl ${BASE}/api/messages/${bob.id} -H 'Authorization: Bearer $ALICE'`,
+    );
+    expect('tombstone hidden from bob', bobHid.body.includes(String(retractedUnread._id)) ? 1 : 0, 0);
+    expect('tombstone still in alice\'s thread', aliceKeeps.body.includes(String(retractedUnread._id)) ? 1 : 0, 1);
+
+    r = await curl(
+      'Bob hides the same tombstone again',
+      ['-X', 'DELETE', `${BASE}/api/messages/${retractedUnread._id}?scope=me`, ...auth(bob.token)],
+      `curl -X DELETE '${BASE}/api/messages/${retractedUnread._id}?scope=me' \\\n    -H 'Authorization: Bearer $BOB'`,
+    );
+    expect('second hide is idempotent', r.status, 200, r.body);
+    expect('and still leaves one unread', await unreadFor(), 1);
+
     console.log(`\n${'─'.repeat(60)}\n${pass} passed, ${fail} failed`);
   } finally {
     if (server) await new Promise<void>((r2) => server!.close(() => r2()));

@@ -614,8 +614,14 @@ export async function remove(req: Request, res: Response): Promise<Response> {
        * row with an unread dot that opens onto nothing. Same helper the
        * retraction uses, so the two can't decrement differently, and skipped
        * when the message was already hidden so a second tap cannot double-count.
+       *
+       * Also skipped for a tombstone. Retracting an unread message already gave
+       * its unread back, and retraction leaves `read: false` behind — so hiding
+       * the tombstone afterwards would release it a second time, and the
+       * `$gt: 0` guard only stops the counter going negative, not it taking a
+       * count that belongs to another unread message in the thread.
        */
-      if (isReceiver && !alreadyHidden) {
+      if (isReceiver && !alreadyHidden && !msg.deletedForEveryone) {
         await releaseThreadUnread(msg.conversationId, me, !msg.read);
       }
 

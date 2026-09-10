@@ -115,7 +115,7 @@ export function Inbox({ activeUserId }: { activeUserId?: string }) {
             <RowsSkeleton count={6} height={58} />
           </div>
         ) : filtered.length === 0 ? (
-          <div className="menu-empty" style={{ padding: '38px 18px' }}>
+          <div className="msg-list-empty">
             {q ? 'No matches.' : 'No conversations yet.'}
           </div>
         ) : (

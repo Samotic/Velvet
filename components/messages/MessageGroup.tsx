@@ -114,11 +114,15 @@ function MessageRow({
   }, [collapsing]);
 
   /**
-   * A tombstone takes no actions and an unsent bubble has no server identity
-   * to act on yet — offering a menu on either would produce a request that
-   * cannot succeed.
+   * An unsent bubble has no server identity to act on yet — offering a menu on
+   * it would produce a request that cannot succeed.
+   *
+   * A tombstone is actionable, deliberately. There is nothing left to edit or
+   * copy, but hiding "This message was deleted" from your own view is still a
+   * real choice, and `MessageMenu` opens straight on that confirm step when the
+   * message is already gone for everyone.
    */
-  const actionable = shape !== 'deleted' && !m.sendState;
+  const actionable = !m.sendState;
 
   return (
     <div ref={rowRef} className={`msg-row${collapsing ? ' collapsing' : ''}`}>
