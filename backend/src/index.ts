@@ -75,6 +75,33 @@ async function main() {
   initSocket(server);
 
   /**
+   * A port that is already taken is a setup problem, not a crash.
+   *
+   * With no listener, Node throws the unhandled 'error' event — a stack trace
+   * ending in EADDRINUSE that reads like a bug in the API, when the usual cause
+   * is a second `npm run dev`, or an earlier one still running in another
+   * terminal. Same FATAL shape as the configuration guards above.
+   *
+   * Attached for startup only and removed once listening, so an error after
+   * that behaves exactly as it did before.
+   */
+  const onStartupError = (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `FATAL: port ${env.port} is already in use.\n` +
+          '  Another Velvet API is probably still running — a second `npm run dev`, or one\n' +
+          '  left open in another terminal. Stop it, then start this one again:\n' +
+          `    Windows:      netstat -ano | findstr :${env.port}   then   taskkill /PID <pid> /F\n` +
+          `    macOS/Linux:  lsof -i :${env.port}   then   kill <pid>`,
+      );
+    } else {
+      console.error(`FATAL: the API could not listen on port ${env.port}:`, err);
+    }
+    process.exit(1);
+  };
+  server.once('error', onStartupError);
+
+  /**
    * `0.0.0.0`, stated rather than left to Node's default.
    *
    * Node already binds every interface when the host is omitted, so this
@@ -85,6 +112,7 @@ async function main() {
    * Railway injects that variable, so nothing here may hardcode 4000.
    */
   server.listen(env.port, '0.0.0.0', () => {
+    server.off('error', onStartupError);
     console.log(`✓ Velvet API listening on 0.0.0.0:${env.port}`);
     console.log(`  CORS allow-origin: ${env.frontendUrl}`);
 
