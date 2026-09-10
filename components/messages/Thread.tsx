@@ -80,6 +80,15 @@ export function Thread({ userId }: { userId: string }) {
    * direction to be optimistic in.
    */
   const [receipts, setReceipts] = useState(false);
+  /**
+   * Why the thread could not be loaded, if it could not.
+   *
+   * Held separately from `canMessage` because the two mean different things to
+   * the reader: "you are not mutual" is a state of a working conversation,
+   * while this is the conversation itself being unavailable. Both close the
+   * composer; only one of them can be fixed by following someone.
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   /** The open ⋯ menu, and where it was opened from. */
   const [menu, setMenu] = useState<{ m: ThreadMessage; at: { x: number; y: number } } | null>(
@@ -115,6 +124,7 @@ export function Thread({ userId }: { userId: string }) {
   useEffect(() => {
     const controller = new AbortController();
     setMessages(null);
+    setLoadError(null);
     stick.current = true;
 
     getThread(userId, controller.signal)
@@ -130,6 +140,21 @@ export function Thread({ userId }: { userId: string }) {
       .catch((err) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         setMessages([]);
+        /**
+         * The composer must close.
+         *
+         * `canMessage` starts optimistically true so it does not flash shut on
+         * an ordinary load, and nothing used to set it back when the load
+         * *failed* — so a thread that 404s rendered as an empty conversation
+         * with a working-looking composer, and every send died at the same
+         * 404. The screen has to stop offering an action it cannot perform.
+         */
+        setCanMessage(false);
+        setLoadError(
+          err instanceof ApiError && err.status === 404
+            ? 'This account no longer exists, so this conversation can’t be opened.'
+            : 'This conversation could not be loaded.',
+        );
       });
 
     return () => controller.abort();
@@ -544,7 +569,19 @@ export function Thread({ userId }: { userId: string }) {
         setMessages((prev) =>
           (prev ?? []).map((x) => (x.id === tempId ? { ...x, sendState: 'failed' as const } : x)),
         );
-        if (err instanceof ApiError && err.status === 403) toast.bad(err.message);
+        /**
+         * Every failure says something.
+         *
+         * This used to toast on 403 alone, so a 404 — the other account gone —
+         * a 422, a 429 or a 500 all produced a bare "Not sent · Retry" with no
+         * reason anywhere on screen, and Retry hit the same wall each time.
+         * The photo and voice paths already reported everything; text was the
+         * odd one out. `ApiError.message` is the server's own sentence, which
+         * is more useful than any wording invented here.
+         */
+        toast.bad(
+          err instanceof ApiError || err instanceof Error ? err.message : 'Message not sent',
+        );
       }
     },
     [userId, toast],
@@ -772,8 +809,15 @@ export function Thread({ userId }: { userId: string }) {
                   size="lg"
                   href={profileHref}
                 />
-                <div className="thread-empty-name">{other?.displayName ?? 'This person'}</div>
-                <p className="thread-empty-line">Send a message to start the conversation.</p>
+                <div className="thread-empty-name">
+                  {other?.displayName ?? (loadError ? 'Unavailable' : 'This person')}
+                </div>
+                {/* An unopenable thread is not an empty one waiting for a first
+                    message, and inviting one here is how a dead conversation
+                    got a composer in the first place. */}
+                <p className="thread-empty-line">
+                  {loadError ?? 'Send a message to start the conversation.'}
+                </p>
               </div>
             )}
 
@@ -808,7 +852,14 @@ export function Thread({ userId }: { userId: string }) {
         )}
       </div>
 
-      {!canMessage ? (
+      {loadError ? (
+        /* Not the same as "not mutual": there is no conversation to add to. */
+        <div className="chat-composer">
+          <div className="chat-composer-inner">
+            <p className="chat-locked">{loadError}</p>
+          </div>
+        </div>
+      ) : !canMessage ? (
         /* History above stays readable — only the ability to add to it stops. */
         <div className="chat-composer">
           <div className="chat-composer-inner">
