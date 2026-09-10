@@ -2,7 +2,12 @@
  * Backfills the edit and soft-delete fields, and the per-participant inbox
  * preview that per-user deletes made necessary.
  *
- *   cd backend && npx tsx scripts/migrate-message-soft-delete.ts [--dry]
+ *   cd backend && npx tsx scripts/migrate-message-soft-delete.ts            # dry run
+ *   cd backend && npx tsx scripts/migrate-message-soft-delete.ts --apply    # writes
+ *
+ * **Dry run is the default, and `--apply` is required to write anything.** It
+ * used to be the reverse — writes by default, `--dry` to hold back — and was
+ * changed to match the other migrations. `--dry` is now simply ignored.
  *
  * Two halves, and the second is the one that matters.
  *
@@ -31,7 +36,9 @@ import { env } from '../src/config/env';
 import { Conversation } from '../src/models/Conversation';
 import { Message } from '../src/models/Message';
 
-const DRY = process.argv.includes('--dry');
+// Dry unless told otherwise, like every migration here: a default that writes is
+// one muscle-memory invocation away from running against production by accident.
+const DRY = !process.argv.includes('--apply');
 
 async function main(): Promise<void> {
   if (!env.mongoUri) throw new Error('MONGODB_URI is not set');

@@ -85,6 +85,12 @@ in the build cache — if you change it, redeploy without the cache.
 
 ## Order
 
+**Before step 1, if the database already holds conversations** — the current
+Atlas cluster does — run the pair-key migration: see
+[stop, migrate, start](#the-pair-key-migration--stop-migrate-start). This API
+must not serve a single request against an unmigrated database; it breaks the
+threads that already exist.
+
 1. **Railway.** Root directory `/backend`, region EU West. It builds from
    `backend/Dockerfile` — an explicit Dockerfile rather than nixpacks, so the
    Node version is a decision in the repo instead of something inferred. Set
@@ -98,28 +104,75 @@ in the build cache — if you change it, redeploy without the cache.
 4. **Google**, if used. Add `https://<railway-url>/api/auth/google/callback` to
    the Authorised redirect URIs, then set `GOOGLE_CALLBACK_URL` to that exact
    string, or set `API_URL` and let it be derived.
-5. **The index migration.** Indexes are no longer built on boot in production
-   — `autoIndex` is off, because Mongoose cannot change an existing index and
-   fails silently when it tries, leaving the schema and the database
-   disagreeing. Run it from a machine holding the production `MONGODB_URI`:
+5. **The notification-index and soft-delete migrations.** Both are safe to
+   run after the deploy — see [Migrations](#migrations) below. The pair-key
+   migration is not, and belongs before step 1.
+
+---
+
+## Migrations
+
+Indexes are not built on boot in production — `autoIndex` is off, because
+Mongoose cannot change an existing index and fails silently when it tries,
+leaving the schema and the database disagreeing. **Any index change is a
+script**, not a schema edit: an edit alone will not take effect in production.
+`scripts/` is not in the image, so every migration runs from a machine holding
+the production `MONGODB_URI`. There are three.
+
+**Every migration is a dry run unless given `--apply`.** This changed. The
+notification-index and soft-delete migrations used to write by default and took
+`--dry` to hold back; both now match the pair-key migration, because two
+scripts with opposite defaults is how the wrong one eventually gets run from
+muscle memory. `--dry` is now ignored, so an old command dry-runs rather than
+writes — and a bare invocation that used to migrate now only reports. Read the
+dry run, then run it again with `--apply`.
+
+All three are idempotent: each inspects the live state and does nothing that
+is already done.
+
+| Script | When, relative to the deploy | If it has not run |
+| --- | --- | --- |
+| `migrate-conversation-pair-key.ts` | **Before** the new code serves any traffic, with the app stopped. | Existing threads open empty and every send into them 500s. |
+| `migrate-notification-index.ts` | After. | Each user can hold only one `message`, one `review_like` and one `review_reply` notification. Nothing that works now breaks. |
+| `migrate-message-soft-delete.ts` | After, once the API is confirmed on the production database. | Previews use the shared string, and go stale for one side at the first per-user delete. |
+
+### The pair-key migration — stop, migrate, start
+
+This is the one that cannot follow the deploy. The new code finds a thread by
+`pairKey`, which no conversation written before it has — so new code against an
+unmigrated database does not merely leave the old bug in place, it breaks
+threads that work today. And old code against a migrated database writes
+conversations without a key, which collide on the new index. Neither version
+may be serving while it runs:
+
+1. **Stop the API**, so nothing is serving the old code.
+2. **Dry run**, and read it. It refuses before writing if a conversation lacks
+   two distinct participants or two conversations share a pair; resolve those
+   first.
 
    ```bash
-   cd backend && npx tsx scripts/migrate-notification-index.ts --dry
-   cd backend && npx tsx scripts/migrate-notification-index.ts
+   cd backend && npx tsx scripts/migrate-conversation-pair-key.ts
    ```
 
-   It is idempotent — it inspects the live index and does nothing if the swap
-   has already happened. **From here on, any index change is a script**, not a
-   schema edit: an edit alone will not take effect in production.
-
-6. **The soft-delete migration**, once you have confirmed the API is talking to the
-   production database. It is not in the image — `scripts/` is excluded — so run
-   it from a machine holding the production `MONGODB_URI`:
+3. **Apply.**
 
    ```bash
-   cd backend && npx tsx scripts/migrate-message-soft-delete.ts --dry
-   cd backend && npx tsx scripts/migrate-message-soft-delete.ts
+   cd backend && npx tsx scripts/migrate-conversation-pair-key.ts --apply
    ```
+
+4. **Start the new code.**
+5. If the old code served *anything* between steps 1 and 4, run step 3 again —
+   it backfills whatever was written without a key.
+
+### The other two — after the deploy
+
+```bash
+cd backend && npx tsx scripts/migrate-notification-index.ts
+cd backend && npx tsx scripts/migrate-notification-index.ts --apply
+
+cd backend && npx tsx scripts/migrate-message-soft-delete.ts
+cd backend && npx tsx scripts/migrate-message-soft-delete.ts --apply
+```
 
 ---
 

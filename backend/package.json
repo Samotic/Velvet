@@ -18,6 +18,7 @@
     "verify:ai": "tsx scripts/verify-ai.ts",
     "verify:account": "tsx scripts/verifyAccount.ts",
     "verify:messages": "tsx scripts/verify-message-edit-delete.ts",
+    "verify:pairkey": "tsx scripts/verify-conversation-pair-key.ts",
     "verify:privacy": "tsx scripts/verify-privacy.ts",
     "verify:quota": "tsx scripts/verify-ai-quota.ts",
     "verify:revocation": "tsx scripts/verify-revocation.ts",

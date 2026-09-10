@@ -469,6 +469,26 @@ before a byte reaches Cloudinary.
   http outside localhost. The composer hides the mic where it cannot work
   rather than offering a dead button.
 
+A thread is identified by **`pairKey`** — both user ids, sorted, joined with
+`:` — and the unique index lives there, never on `participants`.
+`participants_1` used to be `unique`, on the belief that with the array stored
+sorted it made each *pair* unique. A unique index on an array field is unique
+per **element**, so every user could be in exactly one conversation, ever, and
+the first message to a second person 500'd. The key is derived from
+`participants` in a `pre('validate')` hook so the two cannot disagree;
+`participants_1` survives, not unique, because the inbox queries it.
+
+- **New code before the migration breaks existing threads, not just new ones.**
+  This is the non-obvious part. Every lookup is by `pairKey`, which no
+  conversation written before it has, so against an unmigrated database an
+  *existing* thread opens empty and every send into it 500s — the create
+  collides on the old unique index and the retry, looking by key, finds
+  nothing. Deploying without the migration is worse than not deploying.
+  `scripts/migrate-conversation-pair-key.ts --apply` runs **before** the new
+  code serves traffic: stop the app, migrate, start. DEPLOY.md has the steps.
+- `verify:pairkey` asserts that breakage as well as the fix, so the ordering
+  claim is tested rather than remembered.
+
 ### Deleting, and clearing
 
 Deletion has exactly **two** outcomes, and everything else is a bulk

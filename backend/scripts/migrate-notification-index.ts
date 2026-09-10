@@ -1,7 +1,12 @@
 /**
  * Swaps the notification dedupe index from `sparse` to a partial filter.
  *
- *   cd backend && npx tsx scripts/migrate-notification-index.ts [--dry]
+ *   cd backend && npx tsx scripts/migrate-notification-index.ts            # dry run
+ *   cd backend && npx tsx scripts/migrate-notification-index.ts --apply    # writes
+ *
+ * **Dry run is the default, and `--apply` is required to write anything.** It
+ * used to be the reverse — writes by default, `--dry` to hold back — and was
+ * changed to match the other migrations. `--dry` is now simply ignored.
  *
  * ── Why a script and not autoIndex ──
  * MongoDB refuses to redefine an index with the same keys and different
@@ -41,7 +46,9 @@ import mongoose from 'mongoose';
 import { connectDb, disconnectDb } from '../src/lib/db';
 import { env } from '../src/config/env';
 
-const DRY = process.argv.includes('--dry');
+// Dry unless told otherwise, like every migration here: a default that writes is
+// one muscle-memory invocation away from running against production by accident.
+const DRY = !process.argv.includes('--apply');
 
 const NAME = 'userId_1_type_1_followId_1';
 const KEYS = { userId: 1, type: 1, followId: 1 } as const;

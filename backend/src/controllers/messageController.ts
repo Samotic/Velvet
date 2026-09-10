@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
 
 import { Conversation, type IConversationPreview } from '../models/Conversation';
+import { pairKeyFor } from '../models/conversationKey';
 import { EDIT_HISTORY_LIMIT, MESSAGE_KINDS, Message, type MessageKind } from '../models/Message';
 import { Rating } from '../models/Rating';
 import { User } from '../models/User';
@@ -76,23 +77,26 @@ async function isMutual(me: string, other: string): Promise<boolean> {
 /**
  * Finds or creates the thread between two people.
  *
- * `participants` is stored sorted by id string so the pair is a stable key and
- * the unique index actually prevents duplicate threads — without the sort,
- * [a,b] and [b,a] would be two different documents for one conversation.
+ * Looked up by `pairKey`, the field the unique index is on — not by
+ * `participants`, whose index is deliberately not unique (see the model).
  */
 async function conversationFor(a: string, b: string) {
-  const pair = [a, b].sort().map((id) => new Types.ObjectId(id));
+  const pairKey = pairKeyFor(a, b);
 
-  const existing = await Conversation.findOne({ participants: pair });
+  const existing = await Conversation.findOne({ pairKey });
   if (existing) return existing;
 
   try {
-    return await Conversation.create({ participants: pair, unread: new Map<string, number>() });
+    return await Conversation.create({
+      participants: [a, b].sort().map((id) => new Types.ObjectId(id)),
+      unread: new Map<string, number>(),
+    });
   } catch (err) {
     // Two simultaneous first messages can both miss the find; the unique index
-    // rejects the loser, which then reads the winner's document.
+    // rejects the loser, which then reads the winner's document. The retry must
+    // look up by the same key that rejected it, or it can find nothing and 500.
     if (typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000) {
-      const raced = await Conversation.findOne({ participants: pair });
+      const raced = await Conversation.findOne({ pairKey });
       if (raced) return raced;
     }
     throw err;
@@ -208,9 +212,7 @@ export async function thread(req: Request, res: Response): Promise<Response> {
     const other = await User.findById(otherId).lean();
     if (!other) return fail(res, 'User not found', 404);
 
-    const convo = await Conversation.findOne({
-      participants: [me, otherId].sort().map((id) => new Types.ObjectId(id)),
-    }).select('_id');
+    const convo = await Conversation.findOne({ pairKey: pairKeyFor(me, otherId) }).select('_id');
 
     const messages = convo
       ? await Message.find({ conversationId: convo._id, ...Message.visibleTo(me) })
@@ -420,9 +422,7 @@ export async function markRead(req: Request, res: Response): Promise<Response> {
       { $set: { read: true } },
     );
 
-    const convo = await Conversation.findOne({
-      participants: [me, otherId].sort().map((id) => new Types.ObjectId(id)),
-    }).select('_id');
+    const convo = await Conversation.findOne({ pairKey: pairKeyFor(me, otherId) }).select('_id');
 
     if (convo) {
       await Conversation.updateOne({ _id: convo._id }, { $set: { [`unread.${me}`]: 0 } });
@@ -759,9 +759,7 @@ export async function clearHistory(req: Request, res: Response): Promise<Respons
 
     const me = req.user!.userId;
 
-    const convo = await Conversation.findOne({
-      participants: [me, otherId].sort().map((id) => new Types.ObjectId(id)),
-    }).select('_id');
+    const convo = await Conversation.findOne({ pairKey: pairKeyFor(me, otherId) }).select('_id');
 
     // No thread is not an error: the caller wanted it empty, and it is.
     if (!convo) return ok(res, { cleared: scope, retracted: 0, skippedTooOld: 0 });
