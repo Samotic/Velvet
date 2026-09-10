@@ -6069,19 +6069,29 @@ input[type='range']::-moz-range-thumb {
   box-shadow: 0 20px 44px -18px rgba(0, 0, 0, 0.8);
   animation: msgIn 0.16s var(--ease) both;
 }
+/*
+   Row height is set here, not inherited.
+
+   `font: inherit` brings in the page's 1.5 line-height, and on a single-line
+   menu item that leading is pure air: measured, a 39px row left 22px of empty
+   space between one label and the next. An explicit 1.25 with 7px of vertical
+   padding takes most of that out and still leaves a comfortable pointer
+   target. `line-height` has to come after `font: inherit`, which resets it.
+*/
 .msg-menu button,
 .msg-sheet button {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 11px;
+  padding: 7px 11px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--chat-text);
   font: inherit;
   font-size: 14px;
+  line-height: 1.25;
   text-align: left;
   cursor: pointer;
   transition: background var(--t-fast) var(--ease);
@@ -6130,8 +6140,10 @@ input[type='range']::-moz-range-thumb {
   border-radius: 6px 6px 0 0;
   animation: sheetUp 0.22s var(--ease) both;
 }
+/* Touch rows lose the same leading as the popover's, but keep a target of at
+   least 44px — the size a thumb needs: 13 + 18.75 (15px at 1.25) + 13. */
 .msg-sheet button {
-  padding: 14px 14px;
+  padding: 13px 14px;
   font-size: 15px;
 }
 .msg-sheet-title {
@@ -6151,7 +6163,7 @@ input[type='range']::-moz-range-thumb {
 */
 .msg-sheet-note {
   margin: 0;
-  padding: 0 14px 10px;
+  padding: 0 14px 8px;
   max-width: 272px;
   font-size: 12.5px;
   line-height: 1.5;
