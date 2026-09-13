@@ -138,6 +138,11 @@ export interface OnboardingProfileInput {
 export interface LoginInput {
   email: string;
   password: string;
+  /**
+   * The browser's IANA zone, so the login-alert email states the time on the
+   * user's own clock. Optional — the API falls back to UTC.
+   */
+  timeZone?: string;
 }
 
 export interface ResetPasswordInput {

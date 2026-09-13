@@ -24,6 +24,15 @@ import { clearRatingCache } from '@/lib/ratings';
 import { writeOnboardedCookie } from '@/lib/sessionCookie';
 import { closeSocket } from '@/lib/socket';
 
+/** The browser's IANA zone, or undefined — same guard as the advisor's in lib/ai.ts. */
+function browserTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 interface AuthState {
   user: AuthUser | null;
   isLoading: boolean;
@@ -180,7 +189,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // NOTE: `/api/auth/login` and `/api/auth/register` are **API endpoints**, not
   // page routes. The pages moved to /signin and /signup; these did not.
   const login = useCallback(async (input: LoginInput) => {
-    const { token, user: current } = await api.post<AuthPayload>('/api/auth/login', input, {
+    // The zone rides along so the login-alert email states the time on the
+    // user's own clock; the API validates it and falls back to UTC.
+    const body = { ...input, timeZone: input.timeZone ?? browserTimeZone() };
+    const { token, user: current } = await api.post<AuthPayload>('/api/auth/login', body, {
       auth: false,
     });
     applySession(token, current);

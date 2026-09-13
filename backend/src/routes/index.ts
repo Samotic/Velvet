@@ -11,9 +11,10 @@ import * as ratings from '../controllers/ratingController';
 import * as users from '../controllers/userController';
 import * as watchlist from '../controllers/watchlistController';
 import { optionalAuth, requireAuth, requireVerified } from '../middleware/auth';
-import { isTest } from '../config/env';
+import { isDev, isTest } from '../config/env';
 
 import authRoutes from './auth';
+import emailRoutes from './email';
 
 /**
  * A ceiling on model spend from one address.
@@ -62,6 +63,12 @@ const aiLimiter = rateLimit({
 const router = Router();
 
 router.use('/auth', authRoutes);
+
+/**
+ * POST /api/email/test — development only, and not merely refused elsewhere:
+ * outside development it is never mounted, so production answers 404.
+ */
+if (isDev) router.use('/email', emailRoutes);
 
 /* ------------------------------- catalogue ------------------------------- */
 /* Public. The keys live on this server; the browser never sees them.        */

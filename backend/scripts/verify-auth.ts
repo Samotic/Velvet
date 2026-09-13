@@ -7,8 +7,10 @@
  *
  *   npm run verify        (from backend/)
  */
-process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'verify_script_secret';
+// First import, not inline assignments: esbuild hoists imports above plain
+// statements, so env.ts used to snapshot the real .env before these ran — and
+// with SMTP or Resend configured, the registrations below sent real email.
+import './testEnv';
 
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';

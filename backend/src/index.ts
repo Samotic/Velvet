@@ -5,6 +5,7 @@ import { configured, env, isProd } from './config/env';
 import { activeProvider } from './lib/ai';
 import { connectDb } from './lib/db';
 import { initSocket } from './lib/socket';
+import { activeTransport, reportEmailConfiguration } from './services/emailService';
 
 /** Server bootstrap: fail fast on misconfiguration, connect Mongo, then listen. */
 async function main() {
@@ -119,6 +120,7 @@ async function main() {
     // Every third-party integration is optional; say plainly which are live so
     // a missing key is obvious at boot rather than as a 503 hours later.
     const status = (name: string, on: boolean) => `${on ? '✓' : '·'} ${name}`;
+    const mail = activeTransport();
     console.log(
       `  ${[
         status('TMDB', configured.tmdb()),
@@ -128,9 +130,12 @@ async function main() {
         status(activeProvider === 'gemini' ? 'Gemini' : 'Claude', configured.ai()),
         status('Cloudinary', configured.cloudinary()),
         status('Google', configured.google()),
-        status('Email', configured.email()),
+        status(mail ? `Email (${mail === 'smtp' ? 'SMTP' : 'Resend'})` : 'Email', Boolean(mail)),
       ].join('   ')}`,
     );
+
+    // Never exits: a missing mail server disables email, not the API.
+    reportEmailConfiguration();
   });
 }
 

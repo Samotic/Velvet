@@ -319,11 +319,47 @@ that flag flips at step 1, so keying on it would redirect users home mid-flow.
   there: steps 3–6 collect the taste profile the advisor cannot work without.
   `StepReady` carries the prompt, `VerifyBanner` carries it thereafter.
 
-Email lives in `backend/src/services/email.ts` (Resend) — five templates sharing
-one dark-indigo shell. `send()` never throws and no-ops with a log when
-`RESEND_API_KEY` is absent, so signup works on a machine with no mail set up.
-The two notification emails hang off `notify()`, the funnel every follow and
-message already passes through, and only ever go to **verified** addresses.
+Email leaves through one module, `backend/src/services/emailService.ts`:
+**SMTP via Nodemailer** when `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` and
+`EMAIL_FROM_ADDRESS` are all set and valid, **Resend** as the fallback while
+they are not, and a logged no-op when neither is. `sendEmail` never throws, so
+signup works on a machine with no mail set up; the boot log names the live
+transport and prints "SMTP is not configured. Email functionality is disabled."
+when there is none. Three layers, one job each: `emails/templates/*` says what
+an email says (every one with a plain-text part, over the responsive
+dark-indigo shell in `emails/layout.ts`), `services/email.ts` holds the named
+senders controllers call, `emailService.ts` sends. The two notification emails
+hang off `notify()`, the funnel every follow and message already passes
+through, and only ever go to **verified** addresses.
+
+- **SMTP credentials never leave the API process** — not to a client, not into
+  Mongo, not into a log or a response. `config/smtp.ts` reports a bad variable
+  by *name*, never its value; transport errors go through `describeFailure`,
+  which keeps the code (`EAUTH`…) and redacts the password in every encoding
+  AUTH puts on the wire. On a plain connection `requireTLS` is on, so a server
+  that leaves STARTTLS out gets no password — loopback excepted, for local
+  catchers like Mailpit.
+- **Every successful sign-in sends a login alert**: password login, and a Google
+  sign-in to an account that already existed. It fires after authentication,
+  is never awaited, is **SMTP only** (no Resend fallback), and goes only to a
+  **verified** address — anyone can register with a stranger's address, and an
+  alert would tell that stranger when the account is used. It carries the time
+  (in the browser's zone: the login body sends `timeZone`), browser and OS as
+  fixed labels rather than the raw User-Agent, and the IP. Nothing replayable.
+- **`POST /api/email/test` exists only when `NODE_ENV` is `development`.** It is
+  not mounted otherwise, so production answers 404. Signed-in, 10 an hour. An
+  unset `NODE_ENV` counts as development, which makes the Dockerfile's
+  `NODE_ENV=production` load-bearing here too.
+- **Credential tokens are `services/credentialTokens.ts`**: 32 CSPRNG bytes with
+  nothing derived from the user, SHA-256 stored, expiry checked in the same
+  query that finds the hash, cleared on use. The TTLs live there and the
+  templates read them, so an email cannot promise a window the server does not
+  keep.
+- `passwordChanged` and `securityAlert` are rendered and exported as senders,
+  but **nothing sends them yet**.
+- `npm run verify:email` drives all of it through a fake SMTP server on
+  loopback — including a server that rejects the login, one that never answers
+  and one that is gone, none of which may fail a sign-in.
 
 Seams worth preserving:
 

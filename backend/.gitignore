@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .env
+# Every other environment file too (.env.production, .env.backup…). The
+# example is the one that is meant to be committed.
+.env.*
+!.env.example
 *.log
 .mongodb-binaries/
 

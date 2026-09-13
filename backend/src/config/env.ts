@@ -1,5 +1,7 @@
 import dotenv from 'dotenv';
 
+import { readSmtp } from './smtp';
+
 dotenv.config();
 
 /**
@@ -107,6 +109,31 @@ export const env = {
   googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL || process.env.GOOGLE_REDIRECT_URI || '',
 
   /* --- transactional email --- */
+  /**
+   * SMTP, through Nodemailer — the primary transport. Held as the raw strings:
+   * `config/smtp.ts` decides whether they describe a usable server, and names
+   * a wrong variable without ever repeating its value.
+   *
+   * Server-side only. None of these may reach a client, a Mongo document or a
+   * log line; `services/emailService.ts` is the only thing that reads them.
+   */
+  smtp: {
+    host: process.env.SMTP_HOST ?? '',
+    port: process.env.SMTP_PORT ?? '',
+    secure: process.env.SMTP_SECURE ?? '',
+    user: process.env.SMTP_USER ?? '',
+    pass: process.env.SMTP_PASS ?? '',
+    fromName: process.env.EMAIL_FROM_NAME ?? '',
+    fromAddress: process.env.EMAIL_FROM_ADDRESS ?? '',
+  },
+  /**
+   * The frontend origin links inside emails point at. Separate from
+   * FRONTEND_URL — that one is the CORS allow-list, and the two can differ —
+   * but falls back to it, so most deployments never set this.
+   */
+  appUrl: (process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, ''),
+
+  /** Resend — the previous transport, used only while SMTP is not ready. */
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   /**
    * Resend will only deliver from a domain you have verified. Until one is set
@@ -118,6 +145,12 @@ export const env = {
 
 export const isProd = env.nodeEnv === 'production';
 export const isTest = env.nodeEnv === 'test';
+/**
+ * Exactly `development` — not test, not staging. An unset NODE_ENV counts,
+ * because `npm run dev` sets none; that is why the Dockerfile's explicit
+ * `NODE_ENV=production` matters to anything gated on this.
+ */
+export const isDev = env.nodeEnv === 'development';
 
 /** Per-integration readiness, so each route can answer honestly. */
 export const configured = {
@@ -131,5 +164,9 @@ export const configured = {
   cloudinary: () =>
     Boolean(env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret),
   google: () => Boolean(env.googleClientId && env.googleClientSecret),
-  email: () => Boolean(env.resendApiKey),
+  /* Ready only when every required SMTP value is present and valid. */
+  smtp: () => readSmtp(env.smtp).status === 'ready',
+  resend: () => Boolean(env.resendApiKey),
+  /* Can any email go out at all — SMTP, or the Resend fallback. */
+  email: () => configured.smtp() || configured.resend(),
 };

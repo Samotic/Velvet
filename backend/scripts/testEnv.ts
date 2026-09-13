@@ -31,6 +31,18 @@ process.env.JWT_SECRET = 'verify_script_secret';
 process.env.SUPPORTS_TRANSACTIONS = 'false';
 
 process.env.RESEND_API_KEY = '';
+// Every SMTP variable, not just the password. A verify run must never deliver
+// through a real mail server, and a half-blanked config would only trade a
+// real send for a misleading "incomplete" warning. verify-email points these
+// at its own local fake server after importing this module.
+process.env.SMTP_HOST = '';
+process.env.SMTP_PORT = '';
+process.env.SMTP_SECURE = '';
+process.env.SMTP_USER = '';
+process.env.SMTP_PASS = '';
+process.env.EMAIL_FROM_NAME = '';
+process.env.EMAIL_FROM_ADDRESS = '';
+process.env.APP_URL = '';
 process.env.GOOGLE_CLIENT_ID = '';
 process.env.GOOGLE_CLIENT_SECRET = '';
 // Both advisor providers, not just the selected one: a verify run must never

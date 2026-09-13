@@ -5,11 +5,18 @@ import type { Request, Response } from 'express';
 import { configured, env } from '../config/env';
 import { User } from '../models/User';
 import {
+  expiresAt,
+  hashCredentialToken,
+  mintCredentialToken as mintToken,
+} from '../services/credentialTokens';
+import {
+  sendLoginAlertEmail,
   sendPasswordResetEmail,
   sendVerificationEmail,
   sendWelcomeEmail,
 } from '../services/email';
 import * as google from '../services/google';
+import { describeDevice, displayIp } from '../utils/device';
 import { fail, ok } from '../utils/http';
 import { signToken } from '../utils/jwt';
 import {
@@ -34,26 +41,12 @@ const ciExact = (value: string) => new RegExp(`^${escapeRegex(value)}$`, 'i');
 
 /* ----------------------------- credential tokens -------------------------- */
 
-const VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const RESET_TTL_MS = 60 * 60 * 1000; //  1 hour
-
-/**
- * Mints a one-time credential token.
- *
- * The raw value goes in the email; only its SHA-256 is stored. A token is a
- * bearer credential — anyone holding the stored value could take the account
- * over — so a leaked database dump must not be enough to do that. Hashing is
- * unsalted and fast on purpose: the input is 32 bytes of CSPRNG output, not a
- * guessable password, so there is nothing for a slow KDF to protect against.
+/*
+ * Minting, hashing and lifetimes live in `services/credentialTokens.ts`, which
+ * also writes down what a token may and may not contain. `hashToken` keeps its
+ * old exported name because the User model's field docs point here.
  */
-function mintToken(): { raw: string; hash: string } {
-  const raw = crypto.randomBytes(32).toString('hex');
-  return { raw, hash: hashToken(raw) };
-}
-
-export function hashToken(raw: string): string {
-  return crypto.createHash('sha256').update(raw).digest('hex');
-}
+export const hashToken = hashCredentialToken;
 
 /** Issues a fresh verification token, stores its hash, and emails the link. */
 async function issueVerification(user: {
@@ -67,7 +60,7 @@ async function issueVerification(user: {
     {
       $set: {
         emailVerificationToken: hash,
-        emailVerificationExpires: new Date(Date.now() + VERIFY_TTL_MS),
+        emailVerificationExpires: expiresAt('emailVerification'),
       },
     },
   );
@@ -199,10 +192,60 @@ export async function login(req: Request, res: Response): Promise<Response> {
       // Whatever the account is on now. A fresh sign-in is not a revocation.
       tokenVersion: user.tokenVersion ?? 1,
     });
+
+    // Authentication has succeeded, so there is now a sign-in to report.
+    // Fire-and-forget: the response does not wait on the mail server.
+    alertNewLogin(user, req, 'password');
+
     return ok(res, { token, user: user.toJSON() });
   } catch (err) {
     console.error('login error:', err);
     return fail(res, 'Something went wrong signing you in', 500);
+  }
+}
+
+/* ------------------------------ login alerts ------------------------------ */
+
+/**
+ * Emails the account owner that a sign-in just happened.
+ *
+ * Called only after authentication has succeeded, and never awaited: the alert
+ * is a courtesy about the sign-in, not part of it, so a slow, refusing or
+ * absent mail server changes nothing about the response. It cannot throw into
+ * the caller either — the sender never rejects, and this catches regardless.
+ *
+ *  - **SMTP only.** With SMTP not ready this returns before rendering anything,
+ *    so an unconfigured server does no work and writes no log line per sign-in.
+ *  - **Verified addresses only**, the rule `notify` already applies. Anyone can
+ *    register with a stranger's address; mailing login alerts to it would tell
+ *    that stranger each time the account is used.
+ *  - **What it carries:** the time, in the browser's zone when the client sent
+ *    `timeZone` (validated against Intl, UTC otherwise); browser and OS as fixed
+ *    labels, never the raw User-Agent; the IP. Never the password, the JWT, or
+ *    anything else that could be replayed.
+ */
+function alertNewLogin(
+  user: { email: string; displayName: string; emailVerified?: boolean | null },
+  req: Request,
+  method: 'password' | 'google',
+): void {
+  try {
+    if (!user.emailVerified || !configured.smtp()) return;
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    sendLoginAlertEmail({
+      to: user.email,
+      displayName: user.displayName,
+      at: new Date(),
+      timeZone: typeof body.timeZone === 'string' ? body.timeZone : null,
+      device: describeDevice(req.get('user-agent')),
+      ip: displayIp(req.ip),
+      method,
+    }).catch(() => {
+      /* deliver() resolves false rather than rejecting; this is belt and braces. */
+    });
+  } catch (err) {
+    console.error('login alert error:', err instanceof Error ? err.message : 'unknown');
   }
 }
 
@@ -545,7 +588,7 @@ export async function forgotPassword(req: Request, res: Response): Promise<Respo
       {
         $set: {
           passwordResetToken: hash,
-          passwordResetExpires: new Date(Date.now() + RESET_TTL_MS),
+          passwordResetExpires: expiresAt('passwordReset'),
         },
       },
     );
@@ -672,7 +715,7 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
     // an unverified Google address could belong to someone else entirely.
     if (!profile.emailVerified) return bounce('/signin?error=google_unverified');
 
-    const user = await findOrCreateGoogleUser(profile);
+    const { user, existed } = await findOrCreateGoogleUser(profile);
 
     const token = signToken({
       userId: user.id,
@@ -681,6 +724,11 @@ export async function googleCallback(req: Request, res: Response): Promise<void>
       // Whatever the account is on now. A fresh sign-in is not a revocation.
       tokenVersion: user.tokenVersion ?? 1,
     });
+
+    // A sign-in to an account that already existed — including a local account
+    // Google has just been linked to. A brand-new account is a signup, not a
+    // login, and gets no alert.
+    if (existed) alertNewLogin(user, req, 'google');
 
     const next = state.next && state.next.startsWith('/') ? state.next : '';
     const params = new URLSearchParams({ token });
@@ -707,10 +755,12 @@ const verifyStateOrNull = (state: string) => (state ? google.verifyState(state) 
  *                               so a local account that links Google can still
  *                               use its password.
  *  3. Neither                 → create, verified, with a derived handle.
+ *
+ * `existed` is false only for case 3, which is what the login alert keys on.
  */
 async function findOrCreateGoogleUser(profile: google.GoogleProfile) {
   const byGoogleId = await User.findOne({ googleId: profile.googleId });
-  if (byGoogleId) return byGoogleId;
+  if (byGoogleId) return { user: byGoogleId, existed: true };
 
   const byEmail = await User.findOne({ email: profile.email });
   if (byEmail) {
@@ -723,10 +773,10 @@ async function findOrCreateGoogleUser(profile: google.GoogleProfile) {
     // an avatar the user uploaded themselves.
     if (!byEmail.profilePhoto && profile.picture) byEmail.profilePhoto = profile.picture;
     await byEmail.save();
-    return byEmail;
+    return { user: byEmail, existed: true };
   }
 
-  return User.create({
+  const created = await User.create({
     email: profile.email,
     username: await uniqueUsernameFrom(profile.email, profile.name),
     displayName: profile.name,
@@ -736,6 +786,7 @@ async function findOrCreateGoogleUser(profile: google.GoogleProfile) {
     emailVerified: true,
     // No passwordHash: the schema only requires one for local accounts.
   });
+  return { user: created, existed: false };
 }
 
 /**
