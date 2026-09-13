@@ -157,6 +157,26 @@ router.delete(
   messages.clearHistory,
 );
 
+/**
+ * Clearing for both of you: a request the other person answers. Not a scope on
+ * `/history` — nothing is deleted until the answer, and the answer runs the
+ * same writes `/history` does. `:userId` is always the other participant.
+ */
+router.post('/messages/:userId/clear-request', requireAuth, requireVerified, messages.requestClear);
+router.delete('/messages/:userId/clear-request', requireAuth, requireVerified, messages.cancelClear);
+router.post(
+  '/messages/:userId/clear-request/accept',
+  requireAuth,
+  requireVerified,
+  messages.acceptClear,
+);
+router.post(
+  '/messages/:userId/clear-request/decline',
+  requireAuth,
+  requireVerified,
+  messages.declineClear,
+);
+
 router.patch('/messages/:messageId', requireAuth, requireVerified, messages.edit);
 router.delete('/messages/:messageId', requireAuth, requireVerified, messages.remove);
 

@@ -3,3 +3,7 @@ dist/
 .env
 *.log
 .mongodb-binaries/
+
+# Output of scripts/cleanup-orphans.ts — carries production Cloudinary
+# public_ids and message ids. A report, never a source file.
+orphaned-media.json

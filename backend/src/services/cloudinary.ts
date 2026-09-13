@@ -282,6 +282,27 @@ export function derivePublicId(
 }
 
 /**
+ * What became of a message's asset.
+ *
+ * A boolean used to carry this, and it could not tell "destroyed" from "still
+ * on Cloudinary with nothing pointing at it" — so the second went unrecorded.
+ * The caller writes every `stranded` result down (`services/strandedMedia.ts`).
+ */
+export type DestroyResult =
+  /** Destroyed now, or already absent — either way the outcome asked for. */
+  | { outcome: 'destroyed' | 'gone' }
+  /** The message carried no media. */
+  | { outcome: 'none' }
+  /** Still on Cloudinary, and the message no longer references it. Sweep it. */
+  | { outcome: 'stranded'; reason: string; publicId: string | null; resourceType: string | null }
+  /**
+   * Named an asset outside the messages tree, so it was not touched. Not
+   * `stranded` on purpose: that list exists to be swept, and it must never
+   * name an avatar.
+   */
+  | { outcome: 'refused'; publicId: string };
+
+/**
  * Removes the asset behind a message, if it has one.
  *
  * Two layers, in order: the id recorded at upload, then the id parsed out of
@@ -292,26 +313,32 @@ export function derivePublicId(
  * **Never throws and never blocks the caller's response.** A retraction that
  * succeeded in the database but failed at the CDN is a stranded file to sweep
  * up later; a retraction that 500s because the CDN was unreachable is a
- * message the user was told they could not take back. Returns whether the
- * asset was actually destroyed, for logging — not for control flow.
+ * message the user was told they could not take back. What it returns says
+ * which of those happened, so the stranded case can be recorded rather than
+ * only logged.
  */
 export async function destroyMedia(message: {
   mediaUrl?: string | null;
   mediaPublicId?: string | null;
   mediaResourceType?: string | null;
-}): Promise<boolean> {
-  try {
-    if (!message.mediaUrl && !message.mediaPublicId) return false;
-    if (!configured.cloudinary()) return false;
+}): Promise<DestroyResult> {
+  let publicId = message.mediaPublicId ?? null;
+  let resourceType = message.mediaResourceType ?? null;
+  const stranded = (reason: string): DestroyResult => ({
+    outcome: 'stranded',
+    reason,
+    publicId,
+    resourceType,
+  });
 
-    let publicId = message.mediaPublicId ?? null;
-    let resourceType = message.mediaResourceType ?? null;
+  try {
+    if (!message.mediaUrl && !message.mediaPublicId) return { outcome: 'none' };
 
     if (!publicId) {
       const derived = message.mediaUrl ? derivePublicId(message.mediaUrl) : null;
       if (!derived) {
         console.warn(`cloudinary destroy: no public id for ${message.mediaUrl}`);
-        return false;
+        return stranded('no public id stored, and none could be derived from the URL');
       }
       publicId = derived.publicId;
       resourceType = resourceType ?? derived.resourceType;
@@ -325,8 +352,11 @@ export async function destroyMedia(message: {
      */
     if (!isDestroyableMessageMedia(publicId)) {
       console.warn(`cloudinary destroy refused: ${publicId} is outside ${MESSAGE_MEDIA_PREFIX}`);
-      return false;
+      return { outcome: 'refused', publicId };
     }
+
+    // Resolved before this check, not after, so the record names the asset.
+    if (!configured.cloudinary()) return stranded('Cloudinary is not configured on this server');
 
     const type = resourceType ?? 'image';
 
@@ -334,14 +364,15 @@ export async function destroyMedia(message: {
      * An escape hatch for checking the resolution by eye before anything is
      * destroyed. `MEDIA_DESTROY_DRYRUN=true` logs what *would* be destroyed
      * and stops — which matters most for the derived path, where a misparsed
-     * id would either miss the asset or, worse, name a different one.
+     * id would either miss the asset or, worse, name a different one. The
+     * asset is still there afterwards, so it is recorded like any other.
      */
     if (String(process.env.MEDIA_DESTROY_DRYRUN).toLowerCase() === 'true') {
       console.log(
         `[dry run] cloudinary destroy → public_id=${publicId}  resource_type=${type}  ` +
           `source=${message.mediaPublicId ? 'stored' : 'derived-from-url'}`,
       );
-      return false;
+      return stranded('MEDIA_DESTROY_DRYRUN is set');
     }
 
     configure();
@@ -350,15 +381,16 @@ export async function destroyMedia(message: {
       invalidate: true,
     })) as { result?: string };
 
+    if (res.result === 'ok') return { outcome: 'destroyed' };
     // 'not found' is not an error worth shouting about: the asset is gone,
     // which is the outcome asked for.
-    if (res.result !== 'ok' && res.result !== 'not found') {
-      console.warn(`cloudinary destroy: ${publicId} returned ${String(res.result)}`);
-    }
-    return res.result === 'ok';
+    if (res.result === 'not found') return { outcome: 'gone' };
+
+    console.warn(`cloudinary destroy: ${publicId} returned ${String(res.result)}`);
+    return stranded(`Cloudinary answered "${String(res.result)}"`);
   } catch (err) {
     console.error('cloudinary destroy failed:', err);
-    return false;
+    return stranded(`destroy threw: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

@@ -517,6 +517,22 @@ application of them — never a third rule:
   the document kept so counters and cached lists stay coherent. Sender only,
   and only inside `DELETE_WINDOW_MS` (48h).
 
+**Consent is the only thing that widens who may apply them.** "Clear chat for
+both of you" is not a third outcome and not a third scope: it is a request the
+other participant answers. On acceptance, for-me is applied for **both** people
+and for-everyone's content wipe is applied to every message before the
+request's cutoff — **the other person's messages included, and with no 48h
+window.** The sender-only rule and the window both exist to stop one person
+rewriting shared history alone; agreement is what lifts them, and nothing else
+may. There is no path in this codebase by which one person erases another
+person's messages on their own, and there must not be one.
+
+**There is no undo.** An accepted clear wipes the content from Mongo and
+destroys the media on Cloudinary; there is nothing to restore from, by design.
+The confirm step on *accepting* is the only guard — not the request, which can
+be withdrawn. Do not add a restore, a grace period that secretly keeps the
+content, or an accept that skips the confirm.
+
 `DELETE /api/messages/:userId/history` applies those two to a whole
 conversation. It reuses the same predicates, the same window and the same
 `recomputePreview` / `releaseThreadUnread` / `retractMessage` helpers — there is
@@ -537,8 +553,25 @@ paths start disagreeing about what a thread looks like afterwards.
   throttled at concurrency 4 *after* the response — a stranded asset is a
   sweep-up job, a clear that 500s because Cloudinary was slow is a thread the
   user was told they could not tidy.
+- **A stranded asset is recorded, never only logged.** `destroyMedia` returns
+  an outcome, and every `stranded` one — Cloudinary unconfigured or erroring, no
+  derivable id, `MEDIA_DESTROY_DRYRUN` — is appended to `orphaned-media.json`
+  (`services/strandedMedia.ts`; `ORPHANED_MEDIA_FILE` overrides the path) and
+  logged as a `stranded media: {…}` line. All three destroy paths go through
+  `destroyOrRecord`. The file is on the API host's disk, which Railway does not
+  keep across deploys, so the log line is the durable copy. An id outside
+  `velvet/messages/` is `refused` and deliberately **not** recorded: that list
+  exists to be swept, and must never name an avatar. `testEnv.ts` points every
+  verify run at a temp file — the retractions in `verify:clear` and
+  `verify:messages` strand fixture media, and would otherwise write fake ids
+  into the real list.
 - **The notification card is retracted once, not once per message**, because
-  message notifications dedupe to one card per sender.
+  message notifications dedupe to one card per sender — and it is found by
+  **every** cleared id (`retractMessageCards`), because the card holds that
+  sender's *newest* message id. Retracting by a single id, the oldest, is what
+  "Delete my recent messages" used to do, and it left "Alice sent you a message"
+  standing over a thread of tombstones whenever more than one went. A card
+  pointing at a message that survives the clear stays.
 - Every socket event through `emitEach` carries **`withUserId`**, the other
   participant from that recipient's point of view. The per-message events can
   reconcile by `messageId` and ignore it; a clear has no message id, and the
@@ -546,6 +579,88 @@ paths start disagreeing about what a thread looks like afterwards.
 - **The thread reloads rather than patching** after a clear. A bulk change is
   the one case where replaying it into local state means re-deriving, on the
   client, exactly the rules the server has just finished applying.
+- **An empty per-viewer preview is the whole answer.** `conversations` must not
+  fall back field by field from `lastFor` to the shared `lastMessageAt` /
+  `lastSenderId` — an empty entry stores `at: null`, `senderId: null`, and a `??`
+  fallback made a thread cleared for me sort by the hidden message and read
+  "You: Say hello".
+
+#### Clearing for both of you
+
+```
+POST   /api/messages/:userId/clear-request          → { request }       ask
+DELETE /api/messages/:userId/clear-request          → { status }        withdraw
+POST   /api/messages/:userId/clear-request/accept   { requestId }       agree
+POST   /api/messages/:userId/clear-request/decline  { requestId }       keep
+```
+
+`:userId` is always the other person, as in the follow graph. The request id on
+accept and decline pins the answer to the request that was on screen, so one
+withdrawn and re-made in between cannot be accepted by accident.
+
+- **It is a gate, not a deletion path.** Acceptance calls the same
+  `hideForViewers` that clear-for-me calls and the same `tombstone` that "Delete
+  my recent messages" calls, plus the same preview, unread and card helpers.
+  `ClearRequest` holds the gate and, once resolved, the record: who asked, who
+  agreed, when, how far back, how many.
+- **The cutoff is stamped when the request is made**, and acceptance clears
+  `createdAt < cutoff` — never up to the moment of accepting. Anything sent while
+  the request waits survives: it was not part of what either person agreed to.
+  Strictly less-than, because a message the requester could have seen was
+  rendered before they pressed; one sharing the millisecond cannot have been
+  seen, and on an irreversible write the tie goes to the message surviving.
+- **One pending request per conversation is a partial unique index** —
+  `{ conversationId: 1 }`, unique, `partialFilterExpression:
+  { status: { $eq: 'pending' } }`. A plain unique index would be
+  `participants_1` again: right for the first request, then every later request
+  on that thread 11000s forever, and no single-request test would notice. It is
+  also the race guard when both people ask at once. `autoIndex` is off in
+  production, so `migrate-clear-request-index.ts --apply` runs before the deploy.
+- **A request reads `accepted` only after every write has landed.** Accepting
+  first *claims* it — `acceptingSince` set on the still-`pending` document, in
+  one `findOneAndUpdate` whose filter is the whole authorisation — and a
+  withdraw, a decline or a second accept will not act on a request with a live
+  claim, so a withdraw racing an accept is never carried out and answers 409
+  rather than `none`. Then: hide for both, the bookkeeping, the content wipe
+  **last** (it is the write that erases the media handles), and only then
+  `pending → accepted`. A failure releases the claim and leaves the request
+  pending; accepting again is the recovery, and every write is idempotent. A
+  claim older than `ACCEPT_LEASE_MS` (10 min) belongs to an attempt that died
+  without releasing it and holds nothing — generous on purpose, because a lease
+  that lapses mid-accept lets a withdraw through against a thread being wiped.
+- **What a failed acceptance already did stays done**: the messages are hidden
+  from both, and whatever was wiped is wiped. Media is destroyed only after the
+  request reads accepted — except for a message whose wipe had already landed
+  when the attempt failed. Its handle is gone from Mongo, so a retry would never
+  see it; it is destroyed (or recorded) at once. Media of a message not yet
+  wiped keeps its handle for the retry, and if Mongo cannot say which is which,
+  every asset is recorded and none destroyed. A destroy that fails *after* a
+  successful acceptance is recorded like any other and cannot un-accept it.
+- **Asking is capped per person, per thread** — 3 an hour, 5 a day
+  (`CLEAR_REQUEST_LIMITS`, through `services/rateLimit`, keyed on the
+  conversation). Withdrawing takes the card away, so ask-and-withdraw in a loop
+  would otherwise ping one person for as long as someone liked, through a
+  feature built on consent. Per thread so the cap sits between two people: it
+  does not block an honest ask elsewhere, and the other participant keeps their
+  own allowance. Only an ask that would create a request counts — a 404, 409 or
+  422 raises no card and costs nothing — and losing the create race refunds.
+- **Declining is silent**, like a follow decline: the requester is sent no
+  event, and withdrawing answers `none` whether the request was declined or
+  never existed, so it cannot be used to detect a decline. Every resolution
+  withdraws the recipient's `clear_request` card. That card has no Accept of
+  its own — accepting is irreversible, and its confirm lives in the thread.
+- **Unread is recounted, not zeroed** (`recountThreadUnread`). A message that
+  arrived while the request waited still stands and may still be unread;
+  zeroing would erase it. Clear-for-me uses the same count, which is zero there.
+- **Each side is sent `message:cleared` with `scope: 'me'` and a `requestId`** —
+  from each side, that is what happened to their view. Requests and withdrawals
+  send `clear:changed`, which carries no state; the thread reloads.
+- **The other person sees one line, not silence and not a tombstone per
+  message**: "You and Saman cleared this chat · 10 Sep", from the latest
+  accepted request, and the inbox row reads "Chat cleared", dated at acceptance,
+  while nothing in it is visible. Telegram's silent disappearance was rejected
+  because a conversation that vanishes with no trace reads as a bug or an
+  intrusion.
 
 **Known limit — the inbox reads the newest 200 conversations.** `conversations`
 sorts in Mongo on the shared `lastMessageAt`, then **re-sorts in JS** on the
@@ -564,6 +679,63 @@ yet. Do not rediscover this as a bug.
 
 `npm run verify:clear` covers both scopes against a real database — including a
 message backdated past the window, which cannot be created over the API.
+`npm run verify:clearboth` covers clearing for both over real HTTP and real
+sockets: asking and declining change nothing, a decline sends the requester
+nothing, a second request after a decline is allowed, acceptance empties both
+threads (the other person's messages and a 72h-old one included), both
+sidebars and badges, the live update to the other window, stranded media
+recorded to a temp file, a message sent while waiting surviving, a new message
+afterwards, the ask cap (refused at the fourth ask-and-withdraw in an hour,
+without touching the other person or another thread), an acceptance failing
+before and after the wipe and then retried, a held request refusing a withdraw,
+a decline and a second accept, and the migration's dry run, apply and re-run.
+
+---
+
+# KNOWN GAP: there is no delete-account endpoint
+
+Nothing in the API deletes a user. Every account that has ever gone away went
+away **by hand in the database**, which leaves every reference to it in place —
+and the references are what the product reads, not the user row.
+
+The symptom is a direct-message thread whose other participant no longer
+exists. `GET /api/messages/:userId` 404s on the missing user, so does
+`POST .../send`, and the inbox drops the row (`conversations` discards a thread
+with nobody to show) — so the conversation is unreachable from the UI but its
+URL still resolves. The thread then renders as an *empty* conversation, which
+is why `Thread` must set `canMessage` to false and explain itself when the load
+fails: `canMessage` starts optimistically true so the composer does not flash
+shut, and for a while nothing set it back on failure, so a dead thread offered
+a working-looking composer and every send died silently at the same 404.
+
+**`scripts/cleanup-orphans.ts` repairs the wreckage; it is not the missing
+feature.** Dry run by default, `--apply` to write. It covers orphaned
+conversations and their messages, messages with no surviving conversation, and
+dangling `Follow` edges, then recomputes the follower/following mirrors — in
+that order, because `reconcileCounters.ts` derives counts from the edges and
+would otherwise write a count that faithfully includes deleted people. It
+*reports* every other orphan without touching it, and writes stranded
+Cloudinary ids to `orphaned-media.json` rather than destroying them.
+
+**A correct deletion has to decide, per collection, between erasing and
+reassigning** — and that decision is the actual work, not the deleting:
+
+| What | Why it is not obvious |
+| --- | --- |
+| `conversations` + `messages` | The other participant's copy is **their** record of a conversation they had. Erasing it edits someone else's history; keeping it leaves their thread pointing at a ghost. A tombstoned "Deleted account" participant is probably right, which means the *user row* cannot simply vanish. |
+| `follows` (both directions) | Must go, or the edges resurrect a phantom follower and every counter derived from them is wrong. |
+| `followrequests` | Kept as history today, deliberately. History about someone who no longer exists is worthless, so this is the one place deletion is uncontroversial. |
+| `blocks` | Both directions. A block by a deleted account is unenforceable; a block *of* one is pointless. |
+| `followerCount` / `followingCount` / `followers[]` / `following[]` | On every account that referenced them. Recomputed from the edges *after* the edges go, never before. |
+| `notifications` | Both `userId` (theirs, delete) and `fromUserId` (other people's cards *about* them — these are visible to live users and must be removed, not left rendering a missing name). Then `unreadNotificationCount` is wrong and needs recomputing. |
+| `ratings` | The review body is public content other users have replied to and liked. `likes[]` and `replies[].userId` on **other people's** reviews also reference the leaver. Deleting a review silently removes replies that were not theirs. |
+| `watchlistitems`, `aichatmessages`, `feedcaches`, `userstats`, `userneighbors` | Purely personal; delete outright. `userneighbors` additionally names this user in *other* people's vectors, so those need recomputing or they recommend from a ghost. |
+| Cloudinary | The avatar and every message photo and voice note. Storage is billed and nothing else will ever reference them, so they must be destroyed — but only after the message documents are gone, and never for a message the tombstone decision says to keep. |
+| Sessions | `tokenVersion` must be bumped, or a JWT signed before the deletion stays valid for up to seven days against a user row that no longer exists. |
+
+Until someone builds it: **do not delete a user directly in the database.** If
+one has to go, run `cleanup-orphans.ts` afterwards and `reconcileCounters.ts`
+after that, and expect the tombstone question above to still be unanswered.
 
 ## Conventions
 

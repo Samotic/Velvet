@@ -92,9 +92,13 @@ export interface ServerEvents {
   /**
    * A whole conversation was cleared.
    *
-   * Sent to the actor always, and to the other participant only when the scope
-   * was 'everyone' — a clear for me is per-viewer and must tell them nothing,
+   * Sent to the actor always, and to the other participant when the scope was
+   * 'everyone' — a clear for me is per-viewer and must tell them nothing,
    * exactly like a single delete-for-me.
+   *
+   * The one exception is a clear both people agreed to. Each side is then sent
+   * `scope: 'me'` — from each side, that is what happened to their view — with
+   * `requestId` set, which is what marks it as by agreement.
    *
    * Carries the scope rather than a message list: the thread reloads from the
    * server, because a bulk change is the one case where replaying individual
@@ -105,8 +109,17 @@ export interface ServerEvents {
       conversationId: string;
       scope: 'me' | 'everyone';
       deletedAt?: string;
+      /** Set only on a clear for both, accepted. */
+      requestId?: string;
+      clearedAt?: string;
     },
   ) => void;
+  /**
+   * A clear-for-both request on the thread with `withUserId` was made or
+   * withdrawn — or, on my own other tabs only, declined. A decline is never
+   * sent to the person who asked. Carries no state: the thread reloads.
+   */
+  'clear:changed': (payload: { withUserId: string }) => void;
   /** The relay identifies the typist by id only — it has no conversation id. */
   'typing:start': (payload: { userId: string }) => void;
   'typing:stop': (payload: { userId: string }) => void;

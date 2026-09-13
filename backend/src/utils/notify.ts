@@ -70,6 +70,10 @@ export async function notify(opts: {
      *  - **review_reply** — nothing. Each reply is a distinct utterance with
      *    its own text, and collapsing two from one person silently loses one.
      *
+     *  - **clear_request** — the requester. A thread holds at most one pending
+     *    request, and the card is withdrawn when it is answered, so the pair
+     *    is the whole identity of the card.
+     *
      * `createdAt` is refreshed on every upsert, so a collapsed card surfaces
      * at the top rather than staying buried where it first landed.
      */
@@ -79,6 +83,9 @@ export async function notify(opts: {
       }
       if (opts.type === 'message' && opts.fromUserId) {
         return { userId: opts.userId, type: 'message', fromUserId: opts.fromUserId };
+      }
+      if (opts.type === 'clear_request' && opts.fromUserId) {
+        return { userId: opts.userId, type: 'clear_request', fromUserId: opts.fromUserId };
       }
       if (opts.type === 'review_like' && opts.fromUserId && opts.contentId) {
         return {
@@ -266,11 +273,23 @@ export async function retractMessage(msg: {
     await releaseThreadUnread(msg.conversationId, msg.receiverId, msg.wasUnread);
 
     // 2. The card it raised, and the navbar badge that mirrors it.
-    const row = await Notification.findOneAndDelete({
-      messageId: msg._id,
-      type: 'message',
-    }).lean();
-    if (!row) return;
+    await retractMessageCards([msg._id]);
+  } catch (err) {
+    console.error('retractMessage error:', err);
+  }
+}
+
+/**
+ * Removes cards by id and gives back one badge unit per unread card.
+ *
+ * One `findOneAndDelete` per card rather than a `deleteMany`: two retractions
+ * racing over the same card must not both decrement the badge, and only the
+ * call whose delete actually removed the row does.
+ */
+async function withdrawCards(ids: Types.ObjectId[]): Promise<void> {
+  for (const id of ids) {
+    const row = await Notification.findOneAndDelete({ _id: id }).lean();
+    if (!row) continue;
 
     if (!row.read) {
       await User.updateOne(
@@ -280,7 +299,55 @@ export async function retractMessage(msg: {
     }
 
     emitToUser(String(row.userId), 'notification:removed', { id: String(row._id) });
+  }
+}
+
+/**
+ * Withdraws every message card pointing at any of `messageIds`.
+ *
+ * Matched on the whole set, not on one member of it. A card dedupes to one per
+ * sender and holds the id of that sender's **newest** message, so a bulk
+ * retraction cannot know in advance which of its ids the card carries.
+ * Retracting by a single id — as "Delete my recent messages" once did, with the
+ * oldest — only ever matched when one message was cleared, and left "Alice sent
+ * you a message" standing over a thread of tombstones.
+ *
+ * A card pointing at a message **outside** the set is left alone: that message
+ * still stands, and so does the card announcing it.
+ *
+ * Cards only — no thread counter. Never throws.
+ */
+export async function retractMessageCards(messageIds: Types.ObjectId[]): Promise<void> {
+  try {
+    if (!messageIds.length) return;
+    const cards = await Notification.find({ type: 'message', messageId: { $in: messageIds } })
+      .select('_id')
+      .lean();
+    await withdrawCards(cards.map((c) => c._id as Types.ObjectId));
   } catch (err) {
-    console.error('retractMessage error:', err);
+    console.error('retractMessageCards error:', err);
+  }
+}
+
+/**
+ * Takes down the card a clear-for-both request raised, once the request is
+ * accepted, declined or cancelled. A request that can no longer be answered
+ * must leave nothing in the bell to answer. Never throws.
+ */
+export async function withdrawClearRequestCard(
+  recipientId: Types.ObjectId | string,
+  requesterId: Types.ObjectId | string,
+): Promise<void> {
+  try {
+    const cards = await Notification.find({
+      userId: recipientId,
+      type: 'clear_request',
+      fromUserId: requesterId,
+    })
+      .select('_id')
+      .lean();
+    await withdrawCards(cards.map((c) => c._id as Types.ObjectId));
+  } catch (err) {
+    console.error('withdrawClearRequestCard error:', err);
   }
 }

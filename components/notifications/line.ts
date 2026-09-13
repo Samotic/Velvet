@@ -44,6 +44,14 @@ export function notificationLine(n: Notification): {
         href: n.from ? `/messages/${n.from.id}` : '/messages',
         system: false,
       };
+    // No Accept on the card: accepting is irreversible, and its confirm step
+    // lives in the thread, where the request's banner is.
+    case 'clear_request':
+      return {
+        text: `${who} asked to clear your chat for both of you`,
+        href: n.from ? `/messages/${n.from.id}` : '/messages',
+        system: false,
+      };
     case 'ai_picks':
       return { text: 'Your AI picks are ready for this week', href: '/ai', system: true };
     case 'available':

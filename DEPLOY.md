@@ -91,6 +91,9 @@ Atlas cluster does — run the pair-key migration: see
 must not serve a single request against an unmigrated database; it breaks the
 threads that already exist.
 
+**Also before step 1**, but with the app still running: the clear-request index
+— see [the clear-request index](#the-clear-request-index--before-the-deploy-no-downtime).
+
 1. **Railway.** Root directory `/backend`, region EU West. It builds from
    `backend/Dockerfile` — an explicit Dockerfile rather than nixpacks, so the
    Node version is a decision in the repo instead of something inferred. Set
@@ -117,7 +120,7 @@ Mongoose cannot change an existing index and fails silently when it tries,
 leaving the schema and the database disagreeing. **Any index change is a
 script**, not a schema edit: an edit alone will not take effect in production.
 `scripts/` is not in the image, so every migration runs from a machine holding
-the production `MONGODB_URI`. There are three.
+the production `MONGODB_URI`. There are four.
 
 **Every migration is a dry run unless given `--apply`.** This changed. The
 notification-index and soft-delete migrations used to write by default and took
@@ -127,7 +130,7 @@ muscle memory. `--dry` is now ignored, so an old command dry-runs rather than
 writes — and a bare invocation that used to migrate now only reports. Read the
 dry run, then run it again with `--apply`.
 
-All three are idempotent: each inspects the live state and does nothing that
+All four are idempotent: each inspects the live state and does nothing that
 is already done.
 
 | Script | When, relative to the deploy | If it has not run |
@@ -135,6 +138,7 @@ is already done.
 | `migrate-conversation-pair-key.ts` | **Before** the new code serves any traffic, with the app stopped. | Existing threads open empty and every send into them 500s. |
 | `migrate-notification-index.ts` | After. | Each user can hold only one `message`, one `review_like` and one `review_reply` notification. Nothing that works now breaks. |
 | `migrate-message-soft-delete.ts` | After, once the API is confirmed on the production database. | Previews use the shared string, and go stale for one side at the first per-user delete. |
+| `migrate-clear-request-index.ts` | **Before** the deploy that ships "Clear chat for both of you". No need to stop the app. | The feature works, but nothing refuses a second pending request for the same thread, so two people asking at the same instant both succeed. |
 
 ### The pair-key migration — stop, migrate, start
 
@@ -164,6 +168,23 @@ may be serving while it runs:
 5. If the old code served *anything* between steps 1 and 4, run step 3 again —
    it backfills whatever was written without a key.
 
+### The clear-request index — before the deploy, no downtime
+
+Creates `one_pending_per_conversation` — `{ conversationId: 1 }`, unique, with
+`partialFilterExpression: { status: { $eq: 'pending' } }` — and the lookup index
+beside it. The `clearrequests` collection is new, so no running code reads it
+and there is nothing to stop; an index on an empty collection builds instantly.
+
+Before rather than after, because the gap between them is a window in which
+duplicate pending requests can land. If that has already happened, the dry run
+lists the conversations and `--apply` fails on the create rather than
+half-succeeding — cancel all but one pending request per thread, then re-run.
+
+```bash
+cd backend && npx tsx scripts/migrate-clear-request-index.ts
+cd backend && npx tsx scripts/migrate-clear-request-index.ts --apply
+```
+
 ### The other two — after the deploy
 
 ```bash
@@ -173,6 +194,18 @@ cd backend && npx tsx scripts/migrate-notification-index.ts --apply
 cd backend && npx tsx scripts/migrate-message-soft-delete.ts
 cd backend && npx tsx scripts/migrate-message-soft-delete.ts --apply
 ```
+
+---
+
+## Stranded media is recorded on the API's own disk
+
+When a message's photo or voice note cannot be destroyed on Cloudinary after a
+retraction or a clear, the API appends it to `orphaned-media.json` in its
+working directory (`ORPHANED_MEDIA_FILE` overrides the path) **and** logs it as
+one `stranded media: {…}` line. Railway's filesystem does not survive a
+redeploy without a volume, so on Railway the file is lost with the instance —
+**the log line is the durable copy.** Search the logs for `stranded media:`
+before sweeping, or mount a volume and point `ORPHANED_MEDIA_FILE` into it.
 
 ---
 

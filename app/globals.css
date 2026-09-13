@@ -4662,6 +4662,68 @@ textarea.input {
   color: var(--chat-text-muted);
   margin: 0;
 }
+
+/* --- cleared for both ------------------------------------------------------
+   The notice borrows the day divider's hairlines: it marks a moment in the
+   conversation, not a message in it. Muted and unaccented — it is neither
+   interactive nor important enough to compete with what comes after it. */
+.thread-notice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 4px 0 16px;
+}
+.thread-notice::before,
+.thread-notice::after {
+  content: '';
+  flex: 1;
+  min-width: 16px;
+  height: 1px;
+  background: var(--chat-border);
+}
+.thread-notice span {
+  max-width: 75%;
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--chat-text-muted);
+}
+
+/* A request waiting on an answer. Pinned between the header and the log, on
+   the bubble plane, so it reads as part of the thread rather than the chrome.
+   No accent: both buttons are the ghost style, and the destructive colour
+   waits for the confirm step, where the consequence is spelled out. */
+.clear-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 20px;
+  background: var(--chat-surface);
+  border-bottom: 1px solid var(--chat-border);
+}
+.clear-banner-line {
+  flex: 1 1 220px;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: var(--chat-text);
+}
+.clear-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.clear-banner .btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (max-width: 560px) {
+  .clear-banner {
+    padding: 10px 12px;
+  }
+}
 /* No shimmer: a thread is read, not scanned, and a pulsing placeholder reads
    as activity in a surface where activity means a message arrived. */
 .bubble-skeleton {

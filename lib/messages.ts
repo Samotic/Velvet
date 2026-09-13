@@ -57,6 +57,21 @@ export interface ThreadPayload {
    * person has receipts off, which is its own disclosure.
    */
   readReceipts: boolean;
+  /** A clear-for-both request waiting on this thread, from either side. */
+  clearRequest: PendingClear | null;
+  /** When both people last agreed to clear this thread. Drives the notice. */
+  clearedAt: string | null;
+}
+
+/** A clear-for-both request that is still waiting for an answer. */
+export interface PendingClear {
+  id: string;
+  /**
+   * True for the person who asked — who may withdraw it. False for the person
+   * who has to answer it.
+   */
+  requestedByMe: boolean;
+  createdAt: string;
 }
 
 export function getThread(userId: string, signal?: AbortSignal): Promise<ThreadPayload> {
@@ -211,4 +226,48 @@ export interface ClearResult {
  */
 export function clearConversation(userId: string, scope: DeleteScope): Promise<ClearResult> {
   return api.del<ClearResult>(`/api/messages/${userId}/history`, { body: { scope } });
+}
+
+/* ------------------------- clearing, for both of you ----------------------- */
+
+/**
+ * Asks the other person to clear the whole chat for both of you.
+ *
+ * Not a third `DeleteScope`. Nothing is deleted by asking: the other person
+ * accepts or declines, and a decline is never reported back. Acceptance runs
+ * the two existing outcomes for both people, over everything sent before this
+ * call — see `acceptClearRequest` in the backend's message controller.
+ */
+export function requestClearForBoth(userId: string): Promise<PendingClear> {
+  return api
+    .post<{ request: PendingClear }>(`/api/messages/${userId}/clear-request`)
+    .then((r) => r.request);
+}
+
+/** Withdraws my pending request. Succeeds when there is nothing to withdraw. */
+export function cancelClearForBoth(userId: string): Promise<void> {
+  return api.del(`/api/messages/${userId}/clear-request`).then(() => undefined);
+}
+
+/**
+ * Agrees to clear the chat for both. **Irreversible.**
+ *
+ * `requestId` pins the answer to the request that was on screen, so a request
+ * withdrawn and re-made in between cannot be accepted by accident.
+ */
+export function acceptClearForBoth(
+  userId: string,
+  requestId: string,
+): Promise<{ cleared: number; clearedAt: string }> {
+  return api.post<{ cleared: number; clearedAt: string }>(
+    `/api/messages/${userId}/clear-request/accept`,
+    { requestId },
+  );
+}
+
+/** Keeps the chat. The person who asked is not told. */
+export function declineClearForBoth(userId: string, requestId: string): Promise<void> {
+  return api
+    .post(`/api/messages/${userId}/clear-request/decline`, { requestId })
+    .then(() => undefined);
 }

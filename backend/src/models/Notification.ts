@@ -24,6 +24,13 @@ export const NOTIFICATION_TYPES = [
   'review_like',
   'review_reply',
   'message',
+  /**
+   * Someone asked to clear your conversation with them, for both of you. The
+   * card links to the thread and carries no Accept of its own: accepting is
+   * an irreversible wipe, and the thread is where its confirm step lives.
+   * Withdrawn as soon as the request is answered or cancelled.
+   */
+  'clear_request',
   'ai_picks',
   'available',
 ] as const;

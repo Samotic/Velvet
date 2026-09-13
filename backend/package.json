@@ -25,7 +25,9 @@
     "verify:receipts": "tsx scripts/verify-read-receipts.ts",
     "verify:notifications": "tsx scripts/verify-notification-dedupe.ts",
     "verify:media": "tsx scripts/verify-advisor-media.ts",
-    "verify:clear": "tsx scripts/verify-clear-history.ts"
+    "verify:clear": "tsx scripts/verify-clear-history.ts",
+    "verify:clearboth": "tsx scripts/verify-clear-for-both.ts",
+    "verify:cleanup": "tsx scripts/verify-cleanup-orphans.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

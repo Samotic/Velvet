@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
-import { Types } from 'mongoose';
+import { Types, type HydratedDocument, type UpdateQuery } from 'mongoose';
 
+import { ACCEPT_LEASE_MS, ClearRequest, type IClearRequest } from '../models/ClearRequest';
 import { Conversation, type IConversationPreview } from '../models/Conversation';
 import { pairKeyFor } from '../models/conversationKey';
 import { EDIT_HISTORY_LIMIT, MESSAGE_KINDS, Message, type MessageKind } from '../models/Message';
@@ -8,13 +9,19 @@ import { Rating } from '../models/Rating';
 import { User } from '../models/User';
 import { emitToUser } from '../lib/socket';
 import { fail, ok } from '../utils/http';
-import { notify, releaseThreadUnread, retractMessage } from '../utils/notify';
+import {
+  notify,
+  releaseThreadUnread,
+  retractMessage,
+  retractMessageCards,
+  withdrawClearRequestCard,
+} from '../utils/notify';
 import {
   DELETE_WINDOW_MS,
   EDIT_WINDOW_MS,
   MAX_MESSAGE_LENGTH,
 } from '../config/messaging';
-import { previewFor, recomputePreview } from '../services/conversationPreview';
+import { CLEARED_PREVIEW, previewFor, recomputePreview } from '../services/conversationPreview';
 import { receiptsActiveBetween } from '../services/visibility';
 import {
   UploadNotConfiguredError,
@@ -26,6 +33,7 @@ import {
   uploadMessageImage,
 } from '../services/cloudinary';
 import { consume, refund, type LimitWindow } from '../services/rateLimit';
+import { recordStrandedMedia } from '../services/strandedMedia';
 import { areMutual, relationBetween } from '../services/social';
 import { publicProfile, userRef } from '../utils/serialize';
 import { clean, isObjectId, str } from '../utils/validation';
@@ -51,6 +59,28 @@ import { clean, isObjectId, str } from '../utils/validation';
 const MEDIA_LIMITS: LimitWindow[] = [
   { limit: 20, seconds: 60 },
   { limit: 200, seconds: 60 * 60 },
+];
+
+/**
+ * Asking to clear a chat for both is capped per person, **per thread**.
+ *
+ * An ask costs the asker nothing and drops a card in the other person's bell,
+ * and withdrawing takes the card away again — so ask-and-withdraw in a loop
+ * would ping one person for as long as someone cared to, through the feature
+ * whose whole point is consent. Keyed on the conversation as well as the
+ * asker, so the cap sits between two people: pestering one thread does not
+ * stop an honest ask in another, and the other participant keeps their own
+ * allowance.
+ *
+ * 3 an hour leaves room for the honest pattern — ask, withdraw a mis-tap, ask
+ * again — and a fourth inside the hour is already the loop. 5 a day stops the
+ * patient version that waits out each hour. Fixed windows, as for follows, so
+ * a burst straddling a boundary can briefly get past either; the aim is to
+ * stop a loop, not to police the exact fourth ask.
+ */
+const CLEAR_REQUEST_LIMITS: LimitWindow[] = [
+  { limit: 3, seconds: 60 * 60 },
+  { limit: 5, seconds: 24 * 60 * 60 },
 ];
 
 const AUTHOR = 'username displayName profilePhoto';
@@ -115,6 +145,25 @@ export async function conversations(req: Request, res: Response): Promise<Respon
       .limit(200)
       .populate('participants', AUTHOR);
 
+    /**
+     * When each thread on this page was last cleared by agreement, so a row
+     * with nothing visible can say "Chat cleared" instead of "Say hello". One
+     * query for the page, ascending, so the newest clear is the last one set.
+     */
+    const clearedAt = new Map<string, Date>();
+    if (rows.length) {
+      const accepted = await ClearRequest.find({
+        conversationId: { $in: rows.map((c) => c._id) },
+        status: 'accepted',
+      })
+        .sort({ resolvedAt: 1 })
+        .select('conversationId resolvedAt')
+        .lean();
+      for (const r of accepted) {
+        if (r.resolvedAt) clearedAt.set(String(r.conversationId), r.resolvedAt);
+      }
+    }
+
     const out = rows
       .map((c) => {
         // The "other" participant — the one that isn't the caller.
@@ -131,15 +180,31 @@ export async function conversations(req: Request, res: Response): Promise<Respon
          * The preview is per-reader once a message can be hidden for one side
          * only. `lastFor` is the answer; the shared fields are the fallback for
          * rows written before it existed, which the migration backfills.
+         *
+         * When this reader has an entry, it is the **whole** answer — including
+         * when it is empty. It used to fall back field by field with `??`, and
+         * an empty entry stores `at: null` and `senderId: null`, so a thread I
+         * had cleared for myself took the *hidden* message's time and sender:
+         * it sorted by a message I can no longer see, and read "You: Say hello"
+         * whenever I had sent it.
          */
         const mine = c.lastFor?.get(me);
+        const preview = mine ?? {
+          text: c.lastMessage ?? '',
+          at: c.lastMessageAt,
+          senderId: c.lastSenderId,
+        };
+
+        // Nothing visible, and both people agreed to clear it: say so, dated
+        // when it happened, rather than inviting a first message.
+        const cleared = preview.text ? undefined : clearedAt.get(String(c._id));
 
         return {
           id: String(c._id),
           user,
-          lastMessage: mine?.text ?? c.lastMessage ?? '',
-          lastMessageAt: mine?.at ?? c.lastMessageAt,
-          lastFromMe: String(mine?.senderId ?? c.lastSenderId ?? '') === me,
+          lastMessage: cleared ? CLEARED_PREVIEW : preview.text,
+          lastMessageAt: cleared ?? preview.at,
+          lastFromMe: !cleared && String(preview.senderId ?? '') === me,
           unread: c.unread?.get(me) ?? 0,
         };
       })
@@ -241,6 +306,22 @@ export async function thread(req: Request, res: Response): Promise<Response> {
      */
     const receipts = await receiptsActiveBetween(me, otherId);
 
+    /**
+     * Where this thread stands on clearing for both: a pending request drives
+     * the banner, the latest accepted one the "cleared this chat" line.
+     */
+    const [pendingClear, lastClear] = convo
+      ? await Promise.all([
+          ClearRequest.findOne({ conversationId: convo._id, status: 'pending' })
+            .select('_id requesterId createdAt')
+            .lean(),
+          ClearRequest.findOne({ conversationId: convo._id, status: 'accepted' })
+            .sort({ resolvedAt: -1 })
+            .select('resolvedAt')
+            .lean(),
+        ])
+      : [null, null];
+
     return ok(res, {
       messages: messages.map((m) => {
         const json = m.toJSON() as Record<string, unknown>;
@@ -251,6 +332,14 @@ export async function thread(req: Request, res: Response): Promise<Response> {
       canMessage: rel.outgoing === 'accepted' && rel.incoming === 'accepted',
       /** Lets the client render nothing at all, rather than a greyed-out tick. */
       readReceipts: receipts,
+      clearRequest: pendingClear
+        ? {
+            id: String(pendingClear._id),
+            requestedByMe: String(pendingClear.requesterId) === me,
+            createdAt: pendingClear.createdAt,
+          }
+        : null,
+      clearedAt: lastClear?.resolvedAt ?? null,
     });
   } catch (err) {
     console.error('thread error:', err);
@@ -704,7 +793,7 @@ export async function remove(req: Request, res: Response): Promise<Response> {
      * sweep-up job, while a retraction that 500s because Cloudinary was
      * unreachable is a message the user was told they could not take back.
      */
-    void destroyMedia(asset);
+    void destroyOrRecord({ _id: msg._id, kind: msg.kind, ...asset });
 
     return response;
   } catch (err) {
@@ -725,15 +814,140 @@ export async function remove(req: Request, res: Response): Promise<Response> {
  */
 const DESTROY_CONCURRENCY = 4;
 
-/** Runs `work` over `items`, `limit` at a time. Never throws. */
+/**
+ * Runs `work` over `items`, `limit` at a time. Never throws — and never
+ * silently: a rejection is logged, because this runs after the response and a
+ * swallowed error here is an orphan nobody can find.
+ */
 async function inBatches<T>(
   items: T[],
   limit: number,
   work: (item: T) => Promise<unknown>,
 ): Promise<void> {
   for (let i = 0; i < items.length; i += limit) {
-    await Promise.all(items.slice(i, i + limit).map((item) => work(item).catch(() => {})));
+    await Promise.all(
+      items
+        .slice(i, i + limit)
+        .map((item) => work(item).catch((err) => console.error('media cleanup error:', err))),
+    );
   }
+}
+
+/** Where a message's asset lives, read before a wipe clears it. */
+type MediaHandle = {
+  _id: unknown;
+  kind?: string | null;
+  mediaUrl?: string | null;
+  mediaPublicId?: string | null;
+  mediaResourceType?: string | null;
+};
+
+/**
+ * Destroys a message's asset, and writes it down when it could not be.
+ *
+ * Every message-media destroy goes through here — one retraction, "Delete my
+ * recent messages", and a clear by agreement — so all three record a stranded
+ * asset the same way. Never throws: neither `destroyMedia` nor
+ * `recordStrandedMedia` does.
+ */
+async function destroyOrRecord(m: MediaHandle): Promise<void> {
+  const result = await destroyMedia(m);
+  if (result.outcome !== 'stranded') return;
+  await recordStrandedMedia({
+    messageId: String(m._id),
+    kind: m.kind ?? null,
+    publicId: result.publicId,
+    resourceType: result.resourceType,
+    mediaUrl: m.mediaUrl ?? null,
+    reason: result.reason,
+  });
+}
+
+/*
+ * The writes every clear is built from. Each is one of the two deletion
+ * outcomes applied in bulk; the three clears differ only in which of these
+ * they call, over which messages, and who is allowed to ask.
+ */
+
+/**
+ * Delete-for-me's write, for each of `viewerIds`, across a conversation.
+ *
+ * With `before`, only messages created strictly earlier — the cutoff a
+ * clear-for-both request was made with. Without it, the whole thread, which is
+ * what clearing for yourself means.
+ *
+ * `$addToSet` keeps it idempotent: a message already hidden one at a time is
+ * left as it is. New messages carry an empty `deletedFor` and appear normally.
+ */
+async function hideForViewers(
+  conversationId: Types.ObjectId,
+  viewerIds: string[],
+  before?: Date,
+): Promise<void> {
+  for (const viewerId of viewerIds) {
+    const oid = new Types.ObjectId(viewerId);
+    await Message.updateMany(
+      {
+        conversationId,
+        deletedFor: { $ne: oid },
+        ...(before ? { createdAt: { $lt: before } } : {}),
+      },
+      { $addToSet: { deletedFor: oid } },
+    );
+  }
+}
+
+/**
+ * Sets each viewer's thread counter to what is really unread for them.
+ *
+ * Counted rather than set to zero. Clearing for yourself hides everything, so
+ * the count *is* zero — but a clear by agreement stops at its cutoff, and a
+ * message that arrived while the request was pending still stands and may
+ * still be unread. Zeroing would erase it. Counting is right for both, and
+ * also absorbs a message that lands mid-clear.
+ */
+async function recountThreadUnread(
+  conversationId: Types.ObjectId,
+  viewerIds: string[],
+): Promise<void> {
+  const set: Record<string, number> = {};
+  for (const viewerId of viewerIds) {
+    set[`unread.${viewerId}`] = await Message.countDocuments({
+      conversationId,
+      receiverId: viewerId,
+      read: false,
+      deletedForEveryone: { $ne: true },
+      ...Message.visibleTo(viewerId),
+    });
+  }
+  await Conversation.updateOne({ _id: conversationId }, { $set: set });
+}
+
+/**
+ * Delete-for-everyone's write: the content goes, the document stays.
+ *
+ * The same fields the per-message retraction clears, for the same reason —
+ * counters and cached lists stay coherent, and nothing readable survives,
+ * superseded drafts included. An existing tombstone is skipped so its original
+ * `deletedAt` and `deletedBy` stand.
+ */
+async function tombstone(ids: Types.ObjectId[], deletedBy: string, deletedAt: Date): Promise<void> {
+  if (!ids.length) return;
+  await Message.updateMany(
+    { _id: { $in: ids }, deletedForEveryone: { $ne: true } },
+    {
+      $set: {
+        deletedForEveryone: true,
+        deletedAt,
+        deletedBy: new Types.ObjectId(deletedBy),
+        text: '',
+        mediaUrl: null,
+        mediaPublicId: null,
+        mediaResourceType: null,
+        editHistory: [],
+      },
+    },
+  );
 }
 
 /**
@@ -776,23 +990,12 @@ export async function clearHistory(req: Request, res: Response): Promise<Respons
 
     if (scope === 'me') {
       /**
-       * One write for the whole thread. `$addToSet` makes it idempotent, so
-       * clearing twice is not an error and messages already hidden one at a
-       * time are simply left as they are.
-       *
        * Note this hides **their** messages from me as well as my own — that is
        * what clearing a history means, and it is per-viewer, so their copy is
-       * untouched. New messages carry an empty `deletedFor` and appear
-       * normally, which needs no work here.
+       * untouched.
        */
-      await Message.updateMany(
-        { conversationId: convo._id, deletedFor: { $ne: new Types.ObjectId(me) } },
-        { $addToSet: { deletedFor: new Types.ObjectId(me) } },
-      );
-
-      // Everything is hidden, so nothing of mine is unread. Set rather than
-      // decremented: the count is now knowably zero.
-      await Conversation.updateOne({ _id: convo._id }, { $set: { [`unread.${me}`]: 0 } });
+      await hideForViewers(convo._id, [me]);
+      await recountThreadUnread(convo._id, [me]);
 
       const previews = await recomputePreview(convo._id, [me]);
       emitEach([me], 'message:cleared', previews, {
@@ -817,7 +1020,7 @@ export async function clearHistory(req: Request, res: Response): Promise<Respons
       senderId: me,
       deletedForEveryone: { $ne: true },
     })
-      .select('_id read createdAt mediaUrl mediaPublicId mediaResourceType')
+      .select('_id kind read createdAt mediaUrl mediaPublicId mediaResourceType')
       .lean();
 
     const eligible = mine.filter((m) => m.createdAt >= cutoff);
@@ -828,26 +1031,10 @@ export async function clearHistory(req: Request, res: Response): Promise<Respons
     }
 
     const deletedAt = new Date();
-    const ids = eligible.map((m) => m._id);
+    const ids = eligible.map((m) => m._id as Types.ObjectId);
 
-    // One write. The same fields the per-message path clears, for the same
-    // reason: the document survives so counters and cached lists stay
-    // coherent, the content does not.
-    await Message.updateMany(
-      { _id: { $in: ids } },
-      {
-        $set: {
-          deletedForEveryone: true,
-          deletedAt,
-          deletedBy: new Types.ObjectId(me),
-          text: '',
-          mediaUrl: null,
-          mediaPublicId: null,
-          mediaResourceType: null,
-          editHistory: [],
-        },
-      },
-    );
+    // One write, through the helper the clear by agreement also uses.
+    await tombstone(ids, me, deletedAt);
 
     /**
      * Their unread counter, once per message that was unread.
@@ -862,20 +1049,13 @@ export async function clearHistory(req: Request, res: Response): Promise<Respons
     }
 
     /**
-     * The notification card, once — not once per message.
-     *
-     * Message notifications now dedupe to one card per sender, so the first
-     * retraction removes it and the other forty would be no-ops against a row
-     * that is already gone.
+     * The notification card, once — not once per message — and found by any
+     * of the retracted ids, because it holds my newest one. This used to pass
+     * `eligible[0]`, the oldest, which missed the card whenever more than one
+     * message was retracted. The unread counter was released above, per
+     * message; this touches cards only.
      */
-    await retractMessage({
-      _id: eligible[0]._id as Types.ObjectId,
-      conversationId: convo._id,
-      receiverId: new Types.ObjectId(otherId),
-      // The unread counter was released above, per message; this call must not
-      // release a second one.
-      wasUnread: false,
-    });
+    await retractMessageCards(ids);
 
     const previews = await recomputePreview(convo._id, participants);
     emitEach(participants, 'message:cleared', previews, {
@@ -890,18 +1070,501 @@ export async function clearHistory(req: Request, res: Response): Promise<Respons
       skippedTooOld,
     });
 
-    // After the response, throttled. A stranded asset is a sweep-up job; a
-    // clear that 500s because Cloudinary was slow is a thread the user was
-    // told they could not tidy.
+    // After the response, throttled. A stranded asset is a sweep-up job — and
+    // is recorded as one — while a clear that 500s because Cloudinary was slow
+    // is a thread the user was told they could not tidy.
     void inBatches(
       eligible.filter((m) => m.mediaUrl || m.mediaPublicId),
       DESTROY_CONCURRENCY,
-      (m) => destroyMedia(m),
+      destroyOrRecord,
     );
 
     return response;
   } catch (err) {
     console.error('clear history error:', err);
     return fail(res, 'Could not clear that conversation', 500);
+  }
+}
+
+/* ------------------------ clearing, for both of you ----------------------- */
+
+/*
+ * Clearing a conversation for both participants is **consent-gated**, and it
+ * is not a third kind of deletion.
+ *
+ * One person asks, and nothing changes. The other accepts, and then — for every
+ * message created before the moment of asking —
+ *
+ *  - delete-for-me is applied for **both** of them: `hideForViewers`, the write
+ *    "Clear chat for me" makes, once per participant; and
+ *  - delete-for-everyone's content wipe is applied: `tombstone`, the write
+ *    "Delete my recent messages" makes, with its media destroyed.
+ *
+ * Two people could already reach the same *visible* result by each clearing
+ * for themselves. What agreement adds is permission for the wipe to reach past
+ * its two ordinary limits: it covers the other person's messages, not only the
+ * sender's, and it has no 48-hour window. Both limits exist to stop one person
+ * rewriting shared history alone; with both agreeing, neither applies. That
+ * permission is the only new rule. **There is no undo** — the content is gone
+ * from Mongo and Cloudinary, and the confirm step is the only guard.
+ *
+ * `:userId` is always the other person, as in the follow graph. Requester and
+ * recipient come from the session and the pair; the one id a caller supplies is
+ * the request id on accept and decline, which pins the answer to the exact
+ * request the recipient was shown rather than whichever is pending by then.
+ */
+
+/** "Already asked", worded for whoever is asking again. */
+function pendingMessage(requesterId: unknown, me: string): string {
+  return String(requesterId) === me
+    ? 'You have already asked to clear this chat'
+    : 'They have already asked to clear this chat — answer it in the thread';
+}
+
+/** POST /api/messages/:userId/clear-request — ask to clear the chat for both. */
+export async function requestClear(req: Request, res: Response): Promise<Response> {
+  try {
+    const otherId = req.params.userId;
+    if (!isObjectId(otherId)) return fail(res, 'User not found', 404);
+
+    const me = req.user!.userId;
+    if (otherId === me) return fail(res, 'User not found', 404);
+
+    const other = await User.findById(otherId).select('_id');
+    if (!other) return fail(res, 'User not found', 404);
+
+    const convo = await Conversation.findOne({ pairKey: pairKeyFor(me, otherId) }).select('_id');
+    if (!convo) return fail(res, 'There is no conversation to clear', 404);
+
+    /**
+     * Something has to be left to clear. A thread that is already hidden from
+     * both people and wiped would raise a request — and a card in someone
+     * else's bell — whose acceptance changes nothing.
+     */
+    const meOid = new Types.ObjectId(me);
+    const otherOid = new Types.ObjectId(otherId);
+    const anything = await Message.exists({
+      conversationId: convo._id,
+      $or: [
+        { deletedForEveryone: { $ne: true } },
+        { deletedFor: { $ne: meOid } },
+        { deletedFor: { $ne: otherOid } },
+      ],
+    });
+    if (!anything) return fail(res, 'There is nothing left to clear in this chat', 422);
+
+    const existing = await ClearRequest.findOne({ conversationId: convo._id, status: 'pending' })
+      .select('requesterId')
+      .lean();
+    if (existing) return fail(res, pendingMessage(existing.requesterId, me), 409);
+
+    /**
+     * Counted here and only here: past every refusal that raises no card, so a
+     * 404, a 409 or a 422 costs nothing, and before the create, so an ask over
+     * the cap never reaches anyone's bell. See `CLEAR_REQUEST_LIMITS`.
+     */
+    const limitAction = `clear_request:${String(convo._id)}`;
+    const gate = await consume(me, limitAction, CLEAR_REQUEST_LIMITS);
+    if (!gate.ok) {
+      const minutes = Math.ceil(gate.retryAfter / 60);
+      return fail(
+        res,
+        `You have asked to clear this chat too many times. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+        429,
+      );
+    }
+
+    // The cutoff is now: the request covers what exists at the moment of asking.
+    const cutoff = new Date();
+
+    let request;
+    try {
+      request = await ClearRequest.create({
+        conversationId: convo._id,
+        requesterId: me,
+        recipientId: otherId,
+        cutoff,
+        status: 'pending',
+      });
+    } catch (err) {
+      // Both people asked in the same instant and both missed the find above.
+      // The partial unique index let exactly one in; report that one.
+      if (typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000) {
+        // The loser made no request and raised no card, so its ask is handed back.
+        await refund(me, limitAction, CLEAR_REQUEST_LIMITS);
+        const winner = await ClearRequest.findOne({ conversationId: convo._id, status: 'pending' })
+          .select('requesterId')
+          .lean();
+        return fail(res, pendingMessage(winner?.requesterId, me), 409);
+      }
+      throw err;
+    }
+
+    // Awaited, unlike a message's notify: it is how the other person learns
+    // there is something to answer at all, and it never throws.
+    await notify({ userId: otherId, type: 'clear_request', fromUserId: me });
+
+    // Their open thread grows the banner; so do my other tabs.
+    emitToUser(otherId, 'clear:changed', { withUserId: me });
+    emitToUser(me, 'clear:changed', { withUserId: otherId });
+
+    return ok(
+      res,
+      {
+        request: {
+          id: String(request._id),
+          requestedByMe: true,
+          createdAt: request.createdAt,
+        },
+      },
+      201,
+    );
+  } catch (err) {
+    console.error('request clear error:', err);
+    return fail(res, 'Could not ask to clear this chat', 500);
+  }
+}
+
+/**
+ * A request no acceptance is holding. `{ acceptingSince: null }` also matches a
+ * document without the field, so requests made before it existed qualify. A
+ * claim older than the lease belongs to an attempt that died without letting go.
+ */
+function unclaimed(now: Date) {
+  return {
+    $or: [
+      { acceptingSince: null },
+      { acceptingSince: { $lt: new Date(now.getTime() - ACCEPT_LEASE_MS) } },
+    ],
+  };
+}
+
+/**
+ * Takes one pending request addressed to `me`, atomically: `claim` marks an
+ * acceptance under way and leaves the request pending; `decline` resolves it.
+ *
+ * The filter is the whole authorisation: this request, in this pair's
+ * conversation, from them, to me, still pending, and not held by an acceptance
+ * already under way. A withdraw racing an accept can only win or lose the same
+ * document, so a withdrawn request is never carried out, and a double-tapped
+ * accept finds the request held the second time.
+ */
+async function answerRequest(
+  req: Request,
+  res: Response,
+  action: 'claim' | 'decline',
+): Promise<
+  | { ok: false; response: Response }
+  | {
+      ok: true;
+      me: string;
+      otherId: string;
+      conversationId: Types.ObjectId;
+      request: HydratedDocument<IClearRequest>;
+      at: Date;
+    }
+> {
+  const otherId = req.params.userId;
+  if (!isObjectId(otherId)) return { ok: false, response: fail(res, 'User not found', 404) };
+
+  const me = req.user!.userId;
+  const requestId = (req.body as { requestId?: unknown } | undefined)?.requestId;
+  if (typeof requestId !== 'string' || !isObjectId(requestId)) {
+    return { ok: false, response: fail(res, 'Say which request: requestId is required', 400) };
+  }
+
+  const convo = await Conversation.findOne({ pairKey: pairKeyFor(me, otherId) }).select('_id');
+  if (!convo) return { ok: false, response: fail(res, 'Request not found', 404) };
+
+  const at = new Date();
+  const update: UpdateQuery<IClearRequest> =
+    action === 'claim'
+      ? { $set: { acceptingSince: at } }
+      : { $set: { status: 'declined', resolvedAt: at } };
+
+  const request = await ClearRequest.findOneAndUpdate(
+    {
+      _id: requestId,
+      conversationId: convo._id,
+      requesterId: otherId,
+      recipientId: me,
+      status: 'pending',
+      ...unclaimed(at),
+    },
+    update,
+    { new: true },
+  );
+
+  if (!request) {
+    const mine = await ClearRequest.findOne({
+      _id: requestId,
+      conversationId: convo._id,
+      recipientId: me,
+    })
+      .select('status')
+      .lean();
+    if (!mine) return { ok: false, response: fail(res, 'Request not found', 404) };
+    return {
+      ok: false,
+      response:
+        mine.status === 'pending'
+          ? fail(res, 'That request is being accepted right now', 409)
+          : fail(res, 'That request is no longer waiting for an answer', 409),
+    };
+  }
+
+  return { ok: true, me, otherId, conversationId: convo._id, request, at };
+}
+
+/**
+ * Lets go of a failed acceptance's claim, so the request is answerable again at
+ * once rather than when the lease runs out. Matched on the claim's own
+ * timestamp, so it can never release a later attempt's claim. Never throws: if
+ * this fails too, the lease still lapses.
+ */
+async function releaseClaim(id: Types.ObjectId, at: Date): Promise<void> {
+  try {
+    await ClearRequest.updateOne(
+      { _id: id, status: 'pending', acceptingSince: at },
+      { $set: { acceptingSince: null } },
+    );
+  } catch (err) {
+    console.error('accept clear: could not release the claim; it lapses with the lease:', err);
+  }
+}
+
+/**
+ * The media of an acceptance that failed once its wipe had begun.
+ *
+ * `tombstone` erases the handles as it wipes, and the request is still pending,
+ * so a retry reads those messages with no media on them and would never
+ * destroy it. Each asset therefore goes one of three ways, and none is lost:
+ *
+ *  - its message **was** wiped: destroyed now, or recorded when that fails —
+ *    what a successful acceptance would have done with it;
+ *  - its message was **not** wiped: left alone, handle intact, for the retry;
+ *  - Mongo cannot say which, because Mongo is what failed: recorded and not
+ *    destroyed, since it may belong to a message that still stands.
+ *
+ * Never throws.
+ */
+async function settleMediaAfterFailedWipe(media: MediaHandle[]): Promise<void> {
+  let wiped: Set<string>;
+  try {
+    const rows = await Message.find({
+      _id: { $in: media.map((m) => m._id as Types.ObjectId) },
+      mediaUrl: null,
+      mediaPublicId: null,
+    })
+      .select('_id')
+      .lean();
+    wiped = new Set(rows.map((r) => String(r._id)));
+  } catch (err) {
+    console.error('accept clear: could not tell which media was wiped, so all of it is recorded:', err);
+    for (const m of media) {
+      await recordStrandedMedia({
+        messageId: String(m._id),
+        kind: m.kind ?? null,
+        publicId: m.mediaPublicId ?? null,
+        resourceType: m.mediaResourceType ?? null,
+        mediaUrl: m.mediaUrl ?? null,
+        reason: 'a clear-for-both acceptance failed mid-wipe, and whether this message was wiped is unknown',
+      });
+    }
+    return;
+  }
+  await inBatches(
+    media.filter((m) => wiped.has(String(m._id))),
+    DESTROY_CONCURRENCY,
+    destroyOrRecord,
+  );
+}
+
+/**
+ * POST /api/messages/:userId/clear-request/accept — `{ requestId }`.
+ *
+ * The irreversible step. Everything before the request's cutoff is hidden
+ * from both people and its content wiped, their messages and mine alike.
+ *
+ * **The request reads `accepted` only once every write below has landed.** It
+ * is claimed first and stays `pending` throughout, so a failure anywhere
+ * leaves it pending: the claim is released, and accepting again is the
+ * recovery. Every write is idempotent, so a retry repeats what already landed
+ * harmlessly and finishes the rest. What a failed attempt did do stays done —
+ * the messages are already hidden from both, and anything wiped is wiped.
+ */
+export async function acceptClear(req: Request, res: Response): Promise<Response> {
+  let claim: { id: Types.ObjectId; at: Date } | null = null;
+  let media: MediaHandle[] = [];
+  let wipeStarted = false;
+
+  try {
+    const answered = await answerRequest(req, res, 'claim');
+    if (!answered.ok) return answered.response;
+    const { me, otherId, conversationId, request, at } = answered;
+    claim = { id: request._id, at };
+
+    const participants = [me, otherId];
+
+    /**
+     * Up to the cutoff **stored on the request**, never up to now. Anything
+     * sent while it waited was not part of what either person agreed to.
+     *
+     * Read before writing: the media handles are about to be cleared, and
+     * nothing can recover them afterwards.
+     */
+    const doomed = await Message.find({ conversationId, createdAt: { $lt: request.cutoff } })
+      .select('_id kind mediaUrl mediaPublicId mediaResourceType')
+      .lean();
+    const ids = doomed.map((m) => m._id as Types.ObjectId);
+    media = doomed.filter((m) => m.mediaUrl || m.mediaPublicId);
+
+    // 1. Delete-for-me, for both of them.
+    await hideForViewers(conversationId, participants, request.cutoff);
+
+    // 2. The bookkeeping every clear does. None of it depends on the wipe —
+    //    the hidden messages already count for nothing and preview nothing —
+    //    so it runs first, and the wipe can be the last message write.
+    await recountThreadUnread(conversationId, participants);
+    await retractMessageCards(ids);
+    await withdrawClearRequestCard(me, otherId);
+    const previews = await recomputePreview(conversationId, participants);
+
+    // 3. Delete-for-everyone's content wipe, with neither the sender rule nor
+    //    the window: the permission the agreement grants. Last, because it is
+    //    the write that erases the media handles — fail before it, and every
+    //    handle is still there for the retry. `deletedBy` names who asked; the
+    //    request records who agreed.
+    const clearedAt = new Date();
+    wipeStarted = true;
+    await tombstone(ids, String(request.requesterId), clearedAt);
+
+    // 4. Only now does the request say it happened.
+    const done = await ClearRequest.findOneAndUpdate(
+      { _id: request._id, status: 'pending', acceptingSince: at },
+      {
+        $set: {
+          status: 'accepted',
+          resolvedAt: clearedAt,
+          clearedCount: ids.length,
+          acceptingSince: null,
+        },
+      },
+      { new: true },
+    );
+    if (!done) {
+      throw new Error(`clear request ${String(request._id)} lost its claim before it was marked accepted`);
+    }
+    claim = null;
+
+    /**
+     * Each side is told `scope: 'me'`, because from each side that is exactly
+     * what happened to their view. Not a third scope: `requestId` is what says
+     * it was by agreement, and both threads reload to pick up the notice.
+     */
+    emitEach(participants, 'message:cleared', previews, {
+      conversationId: String(conversationId),
+      scope: 'me',
+      requestId: String(request._id),
+      clearedAt,
+    });
+
+    const response = ok(res, { cleared: ids.length, clearedAt });
+
+    // After the response, throttled, and every asset that survives recorded. A
+    // destroy failing here cannot un-accept anything: the request records what
+    // happened in Mongo, and the stranded-media list records Cloudinary's side.
+    void inBatches(media, DESTROY_CONCURRENCY, destroyOrRecord);
+
+    return response;
+  } catch (err) {
+    console.error('accept clear error:', err);
+    if (claim) await releaseClaim(claim.id, claim.at);
+    if (wipeStarted && media.length) void settleMediaAfterFailedWipe(media);
+    return fail(res, 'Could not clear this chat. It was not marked as agreed — try again.', 500);
+  }
+}
+
+/**
+ * POST /api/messages/:userId/clear-request/decline — `{ requestId }`.
+ *
+ * Silent, like a declined follow request: the requester is told nothing —
+ * saying so is hostile and invites asking again. Only my own other tabs hear,
+ * so the banner leaves those too.
+ */
+export async function declineClear(req: Request, res: Response): Promise<Response> {
+  try {
+    const answered = await answerRequest(req, res, 'decline');
+    if (!answered.ok) return answered.response;
+    const { me, otherId } = answered;
+
+    await withdrawClearRequestCard(me, otherId);
+    emitToUser(me, 'clear:changed', { withUserId: otherId });
+
+    return ok(res, { status: 'declined' });
+  } catch (err) {
+    console.error('decline clear error:', err);
+    return fail(res, 'Could not answer that request', 500);
+  }
+}
+
+/**
+ * DELETE /api/messages/:userId/clear-request — withdraw my pending request.
+ *
+ * Idempotent: with nothing pending it still answers success, since ending up
+ * with no request is what was asked for. That also means a request they
+ * already declined looks exactly like one that was never there, so cancelling
+ * cannot be used to find out about a silent decline.
+ */
+export async function cancelClear(req: Request, res: Response): Promise<Response> {
+  try {
+    const otherId = req.params.userId;
+    if (!isObjectId(otherId)) return fail(res, 'User not found', 404);
+
+    const me = req.user!.userId;
+
+    const convo = await Conversation.findOne({ pairKey: pairKeyFor(me, otherId) }).select('_id');
+    if (!convo) return ok(res, { status: 'none' });
+
+    const now = new Date();
+    const request = await ClearRequest.findOneAndUpdate(
+      {
+        conversationId: convo._id,
+        requesterId: me,
+        recipientId: otherId,
+        status: 'pending',
+        ...unclaimed(now),
+      },
+      { $set: { status: 'cancelled', resolvedAt: now } },
+      { new: true },
+    );
+    if (!request) {
+      /**
+       * Still pending but held: they are accepting it at this moment, and
+       * answering `none` would tell me it was withdrawn while it is being
+       * carried out. This reveals nothing a decline hides — a declined request
+       * is not pending, and still answers `none`.
+       */
+      const held = await ClearRequest.exists({
+        conversationId: convo._id,
+        requesterId: me,
+        recipientId: otherId,
+        status: 'pending',
+      });
+      if (held) {
+        return fail(res, 'They are accepting this request right now, so it can no longer be withdrawn', 409);
+      }
+      return ok(res, { status: 'none' });
+    }
+
+    // Nothing left to answer, so nothing left in their bell or on their screen.
+    await withdrawClearRequestCard(otherId, me);
+    emitToUser(otherId, 'clear:changed', { withUserId: me });
+    emitToUser(me, 'clear:changed', { withUserId: otherId });
+
+    return ok(res, { status: 'cancelled' });
+  } catch (err) {
+    console.error('cancel clear error:', err);
+    return fail(res, 'Could not withdraw that request', 500);
   }
 }

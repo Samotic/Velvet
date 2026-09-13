@@ -17,6 +17,9 @@
  * dotenv does not overwrite a variable that is already present, and `''` counts
  * as present, so blanking here wins.
  */
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'verify_script_secret';
 
@@ -42,5 +45,11 @@ process.env.IGDB_CLIENT_SECRET = '';
 process.env.CLOUDINARY_CLOUD_NAME = '';
 process.env.CLOUDINARY_API_KEY = '';
 process.env.CLOUDINARY_API_SECRET = '';
+
+// With Cloudinary blanked, every retraction in a verify run strands its fixture
+// media, and stranded media is appended to `orphaned-media.json` relative to the
+// working directory — `backend/`, where the real list from a production dry run
+// lives. Without this, each run writes fake asset ids into the real list.
+process.env.ORPHANED_MEDIA_FILE = join(tmpdir(), `velvet-verify-${process.pid}-orphaned-media.json`);
 
 export {};

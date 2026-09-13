@@ -18,6 +18,14 @@ import { Message, type IMessage, type MessageKind } from '../models/Message';
 export const DELETED_PREVIEW = 'Message deleted';
 
 /**
+ * What an inbox row reads as when nothing in it is visible because both
+ * people agreed to clear it. Applied by the inbox, not stored in `lastFor`:
+ * the stored preview stays a fact about messages, and this is a fact about
+ * the conversation.
+ */
+export const CLEARED_PREVIEW = 'Chat cleared';
+
+/**
  * What the inbox row and the push notification show.
  *
  * A media message has no text, so without this the inbox would render a blank

@@ -138,6 +138,8 @@ export type NotificationType =
   | 'review_like'
   | 'review_reply'
   | 'message'
+  /** Someone asked to clear your chat with them, for both of you. */
+  | 'clear_request'
   | 'ai_picks'
   | 'available';
 

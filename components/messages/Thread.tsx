@@ -14,11 +14,16 @@ import { type ThreadMessage, groupMessages } from '@/lib/messageGroups';
 import {
   DELETE_WINDOW_MS,
   type DeleteScope,
+  type PendingClear,
+  acceptClearForBoth,
+  cancelClearForBoth,
   clearConversation,
+  declineClearForBoth,
   deleteMessage,
   editMessage,
   getThread,
   markThreadRead,
+  requestClearForBoth,
   sendMessage,
   sendPhoto,
   sendVoiceNote,
@@ -28,7 +33,7 @@ import { emitSocket, onSocket } from '@/lib/socket';
 import { Composer } from './Composer';
 import { MessageGroup } from './MessageGroup';
 import { MessageMenu } from './MessageMenu';
-import { ThreadMenu } from './ThreadMenu';
+import { ThreadMenu, type ThreadMenuStage } from './ThreadMenu';
 import { useRecorder } from './useRecorder';
 
 /** Matches the `.msg-row.collapsing` transition in globals.css. */
@@ -43,6 +48,16 @@ const TYPING_IDLE = 1800;
  * the viewport must not be yanked out from under them.
  */
 const STICK_THRESHOLD = 120;
+
+/** "10 Sep" — with the year only when it is not this one. */
+function noticeDate(iso: string): string {
+  const d = new Date(iso);
+  const thisYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(
+    'en-GB',
+    thisYear ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' },
+  );
+}
 
 /** Three bubbles at alternating edges. No shimmer — a thread is not a feed. */
 function ThreadSkeleton() {
@@ -89,13 +104,27 @@ export function Thread({ userId }: { userId: string }) {
    * composer; only one of them can be fixed by following someone.
    */
   const [loadError, setLoadError] = useState<string | null>(null);
+  /**
+   * A clear-for-both request waiting on this thread, from either side, and
+   * when both people last agreed to clear it. Both come from the server on
+   * every load and neither is ever set optimistically: the answer can arrive
+   * from the other person at any moment.
+   */
+  const [clearRequest, setClearRequest] = useState<PendingClear | null>(null);
+  const [clearedAt, setClearedAt] = useState<string | null>(null);
 
   /** The open ⋯ menu, and where it was opened from. */
   const [menu, setMenu] = useState<{ m: ThreadMessage; at: { x: number; y: number } } | null>(
     null,
   );
-  /** The header ⋯ menu, and where it was opened from. */
-  const [threadMenu, setThreadMenu] = useState<{ x: number; y: number } | null>(null);
+  /**
+   * The header ⋯ menu: where it was opened from, and which step it opens on.
+   * The banner's "Clear for both" opens it straight on the confirm.
+   */
+  const [threadMenu, setThreadMenu] = useState<{
+    at: { x: number; y: number };
+    stage: ThreadMenuStage;
+  } | null>(null);
   /** A conversation-level clear in flight, so the confirm cannot be double-tapped. */
   const [clearing, setClearing] = useState(false);
   /** The message being reworded, plus the draft that was displaced to do it. */
@@ -125,15 +154,19 @@ export function Thread({ userId }: { userId: string }) {
     const controller = new AbortController();
     setMessages(null);
     setLoadError(null);
+    setClearRequest(null);
+    setClearedAt(null);
     stick.current = true;
 
     getThread(userId, controller.signal)
-      .then(({ messages: list, user, canMessage: allowed, readReceipts }) => {
+      .then(({ messages: list, user, canMessage: allowed, readReceipts, ...clear }) => {
         setMessages(list);
         setOther(user);
         setFollowing(user.isFollowing);
         setCanMessage(allowed);
         setReceipts(readReceipts);
+        setClearRequest(clear.clearRequest);
+        setClearedAt(clear.clearedAt);
         // Opening the thread is what marks it read.
         void markThreadRead(userId).catch(() => {});
       })
@@ -175,10 +208,12 @@ export function Thread({ userId }: { userId: string }) {
    */
   const reload = useCallback(() => {
     getThread(userId)
-      .then(({ messages: list, canMessage: allowed, readReceipts }) => {
+      .then(({ messages: list, canMessage: allowed, readReceipts, ...clear }) => {
         setMessages(list);
         setCanMessage(allowed);
         setReceipts(readReceipts);
+        setClearRequest(clear.clearRequest);
+        setClearedAt(clear.clearedAt);
       })
       .catch(() => {});
   }, [userId]);
@@ -284,14 +319,23 @@ export function Thread({ userId }: { userId: string }) {
     });
 
     /**
-     * A whole conversation was cleared — by me on another device, or by them
-     * retracting their recent half.
+     * A whole conversation was cleared — by me on another device, by them
+     * retracting their recent half, or by the two of us agreeing to clear it.
      *
      * `withUserId` is the only way to tell whether this thread is the one
      * affected: unlike every event above it there is no message id to match,
      * and the component is addressed by person rather than by conversation.
      */
     const offCleared = onSocket('message:cleared', (p) => {
+      if (p.withUserId !== userId) return;
+      reload();
+    });
+
+    /**
+     * A clear-for-both request on this thread was made or withdrawn, or I
+     * declined one in another tab. The banner reloads with everything else.
+     */
+    const offClearChanged = onSocket('clear:changed', (p) => {
       if (p.withUserId !== userId) return;
       reload();
     });
@@ -327,6 +371,7 @@ export function Thread({ userId }: { userId: string }) {
       offDeleted();
       offDeletedForMe();
       offCleared();
+      offClearChanged();
       // Was missing: without it every thread visited in a session left a live
       // `message:read` listener behind, and each one setState'd against a tree
       // that had moved on.
@@ -537,6 +582,79 @@ export function Thread({ userId }: { userId: string }) {
     },
     [clearing, userId, reload, toast],
   );
+
+  /**
+   * Clearing for both of you: ask, withdraw, agree, keep.
+   *
+   * None is optimistic. Each reaches another person's account or waits on
+   * their answer, so the screen shows what the server says and nothing ahead
+   * of it — on failure too, where a reload is what corrects a banner the
+   * other person has already acted on (a 409 means exactly that).
+   */
+  const askClearForBoth = useCallback(async () => {
+    if (clearing) return;
+    setClearing(true);
+    try {
+      setClearRequest(await requestClearForBoth(userId));
+      setThreadMenu(null);
+      toast.ok(`Asked ${other?.displayName ?? 'them'} to clear this chat`);
+    } catch (err) {
+      toast.bad(err instanceof ApiError ? err.message : "Couldn't send that request");
+      reload();
+    } finally {
+      setClearing(false);
+    }
+  }, [clearing, userId, other?.displayName, reload, toast]);
+
+  const acceptClear = useCallback(async () => {
+    if (clearing || !clearRequest) return;
+    setClearing(true);
+    try {
+      await acceptClearForBoth(userId, clearRequest.id);
+      setThreadMenu(null);
+      setEditing(null);
+      toast.ok('Chat cleared for both of you');
+    } catch (err) {
+      toast.bad(err instanceof ApiError ? err.message : "Couldn't clear this chat");
+    } finally {
+      setClearing(false);
+      reload();
+    }
+  }, [clearing, clearRequest, userId, reload, toast]);
+
+  const declineClear = useCallback(async () => {
+    if (clearing || !clearRequest) return;
+    setClearing(true);
+    try {
+      await declineClearForBoth(userId, clearRequest.id);
+      setClearRequest(null);
+    } catch (err) {
+      toast.bad(err instanceof ApiError ? err.message : "Couldn't answer that request");
+      reload();
+    } finally {
+      setClearing(false);
+    }
+  }, [clearing, clearRequest, userId, reload, toast]);
+
+  const cancelClear = useCallback(async () => {
+    if (clearing) return;
+    setClearing(true);
+    try {
+      await cancelClearForBoth(userId);
+      setClearRequest(null);
+    } catch (err) {
+      toast.bad(err instanceof ApiError ? err.message : "Couldn't withdraw that request");
+      reload();
+    } finally {
+      setClearing(false);
+    }
+  }, [clearing, userId, reload, toast]);
+
+  // A confirm for a request that has since been withdrawn has nothing left to
+  // confirm; close it rather than leave a dead "Clear for both" on screen.
+  useEffect(() => {
+    if (!clearRequest) setThreadMenu((cur) => (cur?.stage === 'accept' ? null : cur));
+  }, [clearRequest]);
 
   /* --- sending ---------------------------------------------------------- */
 
@@ -789,18 +907,86 @@ export function Thread({ userId }: { userId: string }) {
           aria-expanded={threadMenu !== null}
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
-            setThreadMenu((cur) => (cur ? null : { x: r.right - 200, y: r.bottom + 6 }));
+            setThreadMenu((cur) =>
+              cur ? null : { at: { x: r.right - 200, y: r.bottom + 6 }, stage: 'menu' },
+            );
           }}
         >
           <MoreHorizontal />
         </button>
       </div>
 
+      {/*
+        A pending request, pinned under the header rather than scrolled away
+        with the log: it is waiting on an answer. "Clear for both" does not
+        clear — it opens the confirm, which is the only guard on a wipe that
+        cannot be undone.
+      */}
+      {clearRequest && !loadError && (
+        <div className="clear-banner" role="status">
+          {clearRequest.requestedByMe ? (
+            <>
+              <p className="clear-banner-line">
+                You asked {other?.displayName ?? 'them'} to clear this chat for both of you
+              </p>
+              <div className="clear-banner-actions">
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={clearing}
+                  onClick={() => void cancelClear()}
+                >
+                  Cancel request
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="clear-banner-line">
+                {other?.displayName ?? 'They'} asked to clear this chat for both of you
+              </p>
+              <div className="clear-banner-actions">
+                <button
+                  type="button"
+                  className="btn-ghost on"
+                  disabled={clearing}
+                  aria-haspopup="menu"
+                  onClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setThreadMenu({ at: { x: r.right - 200, y: r.bottom + 6 }, stage: 'accept' });
+                  }}
+                >
+                  Clear for both
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={clearing}
+                  onClick={() => void declineClear()}
+                >
+                  Keep
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="thread-log" ref={logRef} onScroll={onScroll}>
         {messages === null ? (
           <ThreadSkeleton />
         ) : (
           <div className="thread-inner">
+            {/* One line for both people, not a tombstone per message. */}
+            {clearedAt && (
+              <div className="thread-notice" role="note">
+                <span>
+                  You and {other?.displayName ?? 'the other person'} cleared this chat ·{' '}
+                  {noticeDate(clearedAt)}
+                </span>
+              </div>
+            )}
+
             {messages.length === 0 && (
               <div className="thread-empty">
                 <Avatar
@@ -903,9 +1089,13 @@ export function Thread({ userId }: { userId: string }) {
       {threadMenu && (
         <ThreadMenu
           otherName={other?.displayName}
-          anchor={threadMenu}
+          anchor={threadMenu.at}
+          initialStage={threadMenu.stage}
           busy={clearing}
+          canAskBoth={!clearRequest && !loadError && messages !== null}
           onClear={(scope) => void clearAll(scope)}
+          onAskBoth={() => void askClearForBoth()}
+          onAcceptBoth={() => void acceptClear()}
           onClose={() => setThreadMenu(null)}
         />
       )}
