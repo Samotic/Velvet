@@ -38,20 +38,39 @@ const nextConfig = {
     remotePatterns: [
       { protocol: 'https', hostname: 'image.tmdb.org', pathname: '/t/p/**' },
       { protocol: 'https', hostname: 'images.igdb.com', pathname: '/igdb/image/**' },
-      { protocol: 'https', hostname: 'res.cloudinary.com', pathname: '/**' },
+      /**
+       * Velvet's own Cloudinary cloud only. `res.cloudinary.com/**` accepted
+       * every Cloudinary account in the world, which let anyone point the
+       * optimiser at a file they host — GHSA-2xp9-vwfh-vxw4 is remote code
+       * execution through an image the optimiser decodes. The cloud name is
+       * public (it is in every delivered URL), so it lives here rather than in
+       * an env var. Change it if the backend's CLOUDINARY_CLOUD_NAME changes.
+       */
+      { protocol: 'https', hostname: 'res.cloudinary.com', pathname: '/nhpamky7/**' },
       /**
        * Google account avatars. A Google sign-in stores the `picture` from the
        * profile as-is, so the first thing a Google user sees is their own
        * avatar — and an unlisted host throws at render rather than degrading.
        *
-       * Wildcarded because Google shards these across lh3…lh6 and picks per
-       * account; pinning lh3 alone would work until it didn't.
+       * Profile pictures only: lh3…lh6 (Google shards avatars across them and
+       * picks per account), under `/a/` and the older `/a-/`. This was
+       * `**.googleusercontent.com/**`, which also covers Google-hosted user
+       * content — files anyone can put there and point the optimiser at, the
+       * GHSA-2xp9-vwfh-vxw4 path the Cloudinary rule above was narrowed for.
        */
-      { protocol: 'https', hostname: '**.googleusercontent.com', pathname: '/**' },
+      ...['lh3', 'lh4', 'lh5', 'lh6'].flatMap((host) =>
+        ['/a/**', '/a-/**'].map((pathname) => ({
+          protocol: 'https',
+          hostname: `${host}.googleusercontent.com`,
+          pathname,
+        })),
+      ),
     ],
-    /* Posters are the page's weight. AVIF roughly halves them against WebP,
-       and the optimiser falls back per browser support. */
-    formats: ['image/avif', 'image/webp'],
+    /* WebP only. AVIF was dropped for GHSA-2xp9-vwfh-vxw4 (AVIF handling in
+       the libheif/sharp stack behind the optimiser), which has no fix on
+       Next 14. Restore it only on a Next release that carries the patch
+       (15.5.24+ / 16.3.3+). */
+    formats: ['image/webp'],
     /* Catalogue art is immutable — a TMDB poster path never changes content.
        Hold the optimised copies for a month instead of the 60s default. */
     minimumCacheTTL: 2678400,

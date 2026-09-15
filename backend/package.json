@@ -28,7 +28,9 @@
     "verify:clear": "tsx scripts/verify-clear-history.ts",
     "verify:clearboth": "tsx scripts/verify-clear-for-both.ts",
     "verify:cleanup": "tsx scripts/verify-cleanup-orphans.ts",
-    "verify:email": "tsx scripts/verify-email.ts"
+    "verify:email": "tsx scripts/verify-email.ts",
+    "db:indexes": "tsx scripts/create-indexes.ts",
+    "verify:indexes": "tsx scripts/verify-create-indexes.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
