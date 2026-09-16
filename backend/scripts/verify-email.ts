@@ -136,6 +136,8 @@ function decodeMime(raw: string): Omit<Received, 'rcpt' | 'authUser'> {
 
 class FakeSmtp {
   readonly messages: Received[] = [];
+  /** The address family of every connection the transport opened. */
+  readonly families: string[] = [];
   /** ok: accept · reject-auth: 535 every login · silent: accept the socket, never greet. */
   mode: 'ok' | 'reject-auth' | 'silent' = 'ok';
   port = 0;
@@ -162,6 +164,7 @@ class FakeSmtp {
 
   private handle(socket: net.Socket) {
     this.sockets.add(socket);
+    this.families.push(String(socket.remoteFamily));
     socket.on('close', () => this.sockets.delete(socket));
     socket.on('error', () => {});
     if (this.mode === 'silent') return;
@@ -351,7 +354,9 @@ async function main(): Promise<void> {
 
   Object.assign(process.env, {
     NODE_ENV: 'development',
-    SMTP_HOST: '127.0.0.1',
+    // A hostname, not an address: the transport resolves it to IPv4 itself, and
+    // this is what exercises that path. The fake server listens on IPv4 only.
+    SMTP_HOST: 'localhost',
     SMTP_PORT: String(smtp.port),
     SMTP_SECURE: 'false',
     SMTP_USER,
@@ -394,10 +399,15 @@ async function main(): Promise<void> {
   {
     reportEmailConfiguration();
     check('SMTP reads as configured', configured.smtp());
-    check('boot report names the server', logs.some((l) => l.includes(`SMTP ready — 127.0.0.1:${smtp.port}`)));
+    check('boot report names the server', logs.some((l) => l.includes(`SMTP ready — localhost:${smtp.port}`)));
     check(
       'boot check logs in to the server',
       await waitFor(() => logs.some((l) => l.includes('SMTP accepted the connection and the credentials'))),
+    );
+    check(
+      'the transport connected over IPv4, never IPv6',
+      smtp.families.length > 0 && smtp.families.every((f) => f === 'IPv4'),
+      smtp.families.join(', '),
     );
   }
 

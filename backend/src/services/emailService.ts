@@ -1,4 +1,8 @@
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+
 import nodemailer, { type Transporter } from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { Resend } from 'resend';
 
 import { env } from '../config/env';
@@ -99,7 +103,9 @@ export function smtpHint(code: string | null): string {
     case 'ECONNECTION':
     case 'ESOCKET':
     case 'EDNS':
-      return 'Could not reach the server. Check SMTP_HOST, SMTP_PORT and SMTP_SECURE, and that this host may connect out on that port.';
+    case 'ENOTFOUND':
+    case 'ENETUNREACH':
+      return 'Could not reach the server. Check SMTP_HOST, SMTP_PORT and SMTP_SECURE, and that this host may connect out on that port over IPv4.';
     case 'EENVELOPE':
       return 'The server refused the sender or the recipient. EMAIL_FROM_ADDRESS must be an address this SMTP account may send as.';
     default:
@@ -112,11 +118,55 @@ const isLoopback = (host: string) =>
 
 /* -------------------------------- transports ------------------------------ */
 
-let smtpClient: Transporter | null = null;
+/**
+ * The SMTP host's IPv4 address.
+ *
+ * Nodemailer resolves a hostname itself: it asks for A **and** AAAA records,
+ * concatenates them, and connects to one picked at random. It leaves IPv6 out
+ * only when the machine has no IPv6 interface at all. Railway's containers have
+ * one but no outbound IPv6 route, so a share of connections went to Gmail's
+ * AAAA address and died with ENETUNREACH.
+ *
+ * None of the obvious switches reach that code. Nodemailer has no `family`
+ * option; a custom `lookup` is never called, because it connects to the
+ * address it resolved rather than handing the name to `net.connect`; and
+ * `--dns-result-order=ipv4first` only orders `dns.lookup`, which it does not
+ * use — it calls `resolve4` and `resolve6`.
+ *
+ * What it does honour is a host that is already an IP: it skips resolution
+ * entirely. So the name is resolved here, IPv4 only. `dns.lookup` goes through
+ * the OS resolver, so `localhost` and hosts-file entries keep working.
+ */
+async function ipv4For(host: string): Promise<string> {
+  if (isIP(host) === 4) return host;
+  const { address } = await lookup(host, { family: 4 });
+  return address;
+}
 
-function smtpTransporter(s: SmtpSettings): Transporter {
-  smtpClient ??= nodemailer.createTransport({
-    host: s.host,
+let smtpClient: { address: string; transporter: Transporter } | null = null;
+
+/**
+ * One transporter per resolved address. DNS can move the host to a different
+ * address over the life of the process; when it does, the old transporter is
+ * closed and a new one built, rather than connecting to a stale address.
+ */
+async function smtpTransporter(s: SmtpSettings): Promise<Transporter> {
+  const address = await ipv4For(s.host);
+  if (smtpClient?.address === address) return smtpClient.transporter;
+  smtpClient?.transporter.close();
+
+  // `servername` is a real SMTP-connection option that the type definitions
+  // do not list; Nodemailer reads it for SNI and certificate checks on both the
+  // implicit-TLS and the STARTTLS path.
+  const options: SMTPTransport.Options & { servername?: string } = {
+    host: address,
+    /*
+     * The certificate is issued to the hostname, not to the address. With an
+     * IP as `host`, Nodemailer would otherwise send no SNI and verify the
+     * certificate against the IP, and every handshake would fail. Omitted when
+     * SMTP_HOST is itself an address, where there is no name to present.
+     */
+    ...(isIP(s.host) ? {} : { servername: s.host }),
     port: s.port,
     secure: s.secure,
     /*
@@ -124,7 +174,8 @@ function smtpTransporter(s: SmtpSettings): Transporter {
      * server — or anything between here and it — that simply leaves STARTTLS
      * out of its EHLO reply gets the password in the clear. Loopback is exempt:
      * a local catcher such as Mailpit has no TLS, and a credential that never
-     * leaves the machine cannot be read off the wire.
+     * leaves the machine cannot be read off the wire. Decided on the configured
+     * name, not the resolved address.
      */
     requireTLS: !s.secure && !isLoopback(s.host),
     auth: { user: s.user, pass: s.pass },
@@ -143,8 +194,11 @@ function smtpTransporter(s: SmtpSettings): Transporter {
     // file path or fetch a URL as the source of a part.
     disableFileAccess: true,
     disableUrlAccess: true,
-  });
-  return smtpClient;
+  };
+
+  const transporter = nodemailer.createTransport(options);
+  smtpClient = { address, transporter };
+  return transporter;
 }
 
 let resendClient: Resend | null = null;
@@ -162,7 +216,8 @@ async function viaSmtp(mail: Prepared): Promise<SendResult> {
   const s = r.settings;
 
   try {
-    const info = await smtpTransporter(s).sendMail({
+    const transporter = await smtpTransporter(s);
+    const info = await transporter.sendMail({
       from: { name: s.fromName, address: s.fromAddress },
       to: mail.to,
       subject: mail.subject,
@@ -253,7 +308,7 @@ export function reportEmailConfiguration(): void {
   if (r.status === 'ready') {
     const { host, port, secure } = r.settings;
     const security = secure ? 'TLS' : isLoopback(host) ? 'plain, loopback only' : 'STARTTLS required';
-    console.log(`  ✓ SMTP ready — ${host}:${port} (${security})`);
+    console.log(`  ✓ SMTP ready — ${host}:${port} (${security}, IPv4)`);
     for (const warning of r.warnings) console.warn(`  ⚠ ${warning}`);
     void checkSmtpConnection(r.settings);
     return;
@@ -272,7 +327,8 @@ export function reportEmailConfiguration(): void {
 /** Logs in once at boot, so a wrong password shows up now rather than at the first signup. */
 async function checkSmtpConnection(settings: SmtpSettings): Promise<void> {
   try {
-    await smtpTransporter(settings).verify();
+    const transporter = await smtpTransporter(settings);
+    await transporter.verify();
     console.log('  ✓ SMTP accepted the connection and the credentials');
   } catch (err) {
     const failure = describeFailure(err, secretForms(settings.user, settings.pass));
