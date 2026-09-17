@@ -214,8 +214,10 @@ export async function login(req: Request, res: Response): Promise<Response> {
  * absent mail server changes nothing about the response. It cannot throw into
  * the caller either — the sender never rejects, and this catches regardless.
  *
- *  - **SMTP only.** With SMTP not ready this returns before rendering anything,
- *    so an unconfigured server does no work and writes no log line per sign-in.
+ *  - **Whatever transport is configured**, SMTP or Resend, decided in
+ *    `emailService` like every other email. With neither, this returns before
+ *    rendering anything, so a server with no mail set up does no work and
+ *    writes no log line per sign-in.
  *  - **Verified addresses only**, the rule `notify` already applies. Anyone can
  *    register with a stranger's address; mailing login alerts to it would tell
  *    that stranger each time the account is used.
@@ -230,7 +232,7 @@ function alertNewLogin(
   method: 'password' | 'google',
 ): void {
   try {
-    if (!user.emailVerified || !configured.smtp()) return;
+    if (!user.emailVerified || !configured.email()) return;
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     sendLoginAlertEmail({

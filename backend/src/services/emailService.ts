@@ -61,9 +61,9 @@ export type SendResult =
 
 export interface SendOptions {
   /**
-   * Use this transport or none. Login alerts and the test endpoint both mean
-   * SMTP specifically, and a silent fallback to Resend would hide exactly the
-   * misconfiguration they exist to reveal.
+   * Use this transport or none. The development test endpoint means SMTP
+   * specifically — it exists to prove SMTP works, and a silent fallback to
+   * Resend would hide the very misconfiguration it is there to reveal.
    */
   only?: EmailTransport;
 }
@@ -339,7 +339,7 @@ export function reportEmailConfiguration(): void {
   }
 
   if (env.resendApiKey) {
-    console.warn('  ⚠ SMTP is not configured. Email is going through Resend; login alerts are disabled.');
+    console.warn('  ⚠ SMTP is not configured. Email is going through Resend.');
   } else {
     console.warn('  ⚠ SMTP is not configured. Email functionality is disabled.');
   }

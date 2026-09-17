@@ -75,12 +75,13 @@ export function sendNewFollowerEmail(opts: { to: string } & NewFollowerInput): P
 /**
  * New login to your account.
  *
- * **SMTP only** — it never falls back to Resend. Login alerts were specified
- * against the SMTP service, and a fallback would quietly send them through a
- * sender the operator may not have set up for real users.
+ * Sent like every other email here: `emailService` picks the transport, so a
+ * deployment on Resend alone still warns people about sign-ins. It was SMTP
+ * only at first, which meant switching to Resend silently turned off the one
+ * email that reports a compromised account.
  */
 export function sendLoginAlertEmail(opts: { to: string } & LoginAlertInput): Promise<boolean> {
-  return deliver(opts.to, () => loginAlert(opts), { only: 'smtp' });
+  return deliver(opts.to, () => loginAlert(opts));
 }
 
 /** Your password was changed. Rendered and ready; nothing sends it yet. */

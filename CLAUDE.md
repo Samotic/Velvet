@@ -341,7 +341,8 @@ through, and only ever go to **verified** addresses.
   catchers like Mailpit.
 - **Every successful sign-in sends a login alert**: password login, and a Google
   sign-in to an account that already existed. It fires after authentication,
-  is never awaited, is **SMTP only** (no Resend fallback), and goes only to a
+  is never awaited, leaves through whichever transport `emailService` selects
+  (SMTP, else Resend) like every other email, and goes only to a
   **verified** address — anyone can register with a stranger's address, and an
   alert would tell that stranger when the account is used. It carries the time
   (in the browser's zone: the login body sends `timeZone`), browser and OS as
