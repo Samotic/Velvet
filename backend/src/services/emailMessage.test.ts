@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   describeFailure,
+  formatSender,
   htmlToText,
   maskAddress,
   normaliseRecipient,
@@ -10,6 +11,33 @@ import {
   redact,
   secretForms,
 } from './emailMessage';
+
+describe('formatSender', () => {
+  it('combines the display name with the address', () => {
+    assert.equal(formatSender('Velvet', 'no-reply@mail.velvetapp.app'), 'Velvet <no-reply@mail.velvetapp.app>');
+  });
+
+  it('sends the bare address when there is no name', () => {
+    assert.equal(formatSender('', 'no-reply@mail.velvetapp.app'), 'no-reply@mail.velvetapp.app');
+    assert.equal(formatSender('   ', 'no-reply@mail.velvetapp.app'), 'no-reply@mail.velvetapp.app');
+  });
+
+  it('quotes a name that would otherwise break the header', () => {
+    assert.equal(formatSender('Velvet, Ltd.', 'a@b.co'), '"Velvet, Ltd." <a@b.co>');
+    assert.equal(formatSender('He said "hi"', 'a@b.co'), '"He said \\"hi\\"" <a@b.co>');
+  });
+
+  it('keeps a line break out of the header', () => {
+    const out = formatSender('Velvet\r\nBcc: eve@example.com', 'a@b.co');
+    assert.doesNotMatch(String(out), /[\r\n]/);
+  });
+
+  it('refuses an address that is not a bare address', () => {
+    for (const bad of ['Velvet <a@b.co>', 'a@b.co, c@d.co', 'not-an-address', '', '  ']) {
+      assert.equal(formatSender('Velvet', bad), null, bad);
+    }
+  });
+});
 
 describe('normaliseRecipient', () => {
   it('accepts one address and trims it', () => {

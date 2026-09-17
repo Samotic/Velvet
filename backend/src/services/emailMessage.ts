@@ -20,6 +20,30 @@ export function normaliseRecipient(value: unknown): string | null {
   return ADDRESS.test(v) ? v : null;
 }
 
+/**
+ * The `From` header, from a display name and a bare address.
+ *
+ * Returns null when the address is not exactly one plain address, so a caller
+ * can fall back rather than send `Velvet <Velvet <a@b.c>>` or something worse:
+ * `EMAIL_FROM_ADDRESS` holds the address alone, never `Name <address>`.
+ *
+ * Nodemailer builds this header itself from `{ name, address }`, so only the
+ * Resend path needs it — Resend takes one string.
+ */
+export function formatSender(name: string, address: string): string | null {
+  const addr = address.trim();
+  if (!ADDRESS.test(addr)) return null;
+
+  // A line break here would end the header and start another one.
+  const display = name.replace(/[\r\n]+/g, ' ').trim().slice(0, 80);
+  if (!display) return addr;
+
+  // RFC 5322: a display name containing any of these must be a quoted string.
+  const needsQuoting = /[()<>@,;:\\".[\]]/.test(display);
+  const quoted = needsQuoting ? `"${display.replace(/["\\]/g, '\\$&')}"` : display;
+  return `${quoted} <${addr}>`;
+}
+
 /** Collapses a header value to one line. Subjects carry display names. */
 export function oneLine(value: string): string {
   return value.replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();

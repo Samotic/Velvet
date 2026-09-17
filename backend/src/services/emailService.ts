@@ -9,6 +9,7 @@ import { env } from '../config/env';
 import { readSmtp, type SmtpReadiness, type SmtpSettings } from '../config/smtp';
 import {
   describeFailure,
+  formatSender,
   htmlToText,
   maskAddress,
   normaliseRecipient,
@@ -202,6 +203,29 @@ async function smtpTransporter(s: SmtpSettings): Promise<Transporter> {
 }
 
 let resendClient: Resend | null = null;
+let warnedAboutSender = false;
+
+/**
+ * The `From` Resend is given.
+ *
+ * `EMAIL_FROM_NAME` + `EMAIL_FROM_ADDRESS` are the sender for both transports —
+ * Nodemailer already takes them as a pair, and this is the string form Resend
+ * wants. `EMAIL_FROM` stays as the older single-string override for a
+ * deployment that still sets it, and the resend.dev default is last: it only
+ * delivers to the address owning the Resend account.
+ */
+function resendSender(): string {
+  const composed = formatSender(env.smtp.fromName || 'Velvet', env.smtp.fromAddress);
+  if (composed) return composed;
+
+  if (env.smtp.fromAddress.trim() && !warnedAboutSender) {
+    warnedAboutSender = true;
+    console.warn(
+      'EMAIL_FROM_ADDRESS is not a single bare address (it must not include a display name); falling back to EMAIL_FROM',
+    );
+  }
+  return env.emailFrom;
+}
 
 interface Prepared {
   to: string;
@@ -242,7 +266,7 @@ async function viaResend(mail: Prepared): Promise<SendResult> {
 
   try {
     const { data, error } = await resendClient.emails.send({
-      from: env.emailFrom,
+      from: resendSender(),
       to: mail.to,
       subject: mail.subject,
       html: mail.html,
